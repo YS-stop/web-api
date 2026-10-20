@@ -1,0 +1,33 @@
+{
+  "name": "video-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TwitCanva Video Workflow 后端服务（Express + AI 模型接入）",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.8.0",
+    "@google/genai": "^1.32.0",
+    "@google/generative-ai": "^0.24.1",
+    "@langchain/core": "^1.2.14",
+    "@langchain/google-genai": "^2.0.4",
+    "@langchain/langgraph": "^1.0.4",
+    "@langchain/openai": "^1.6.2",
+    "archiver": "^8.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "openai": "^6.14.0",
+    "sharp": "^0.35.5",
+    "twitter-api-v2": "^1.28.0",
+    "ws": "^8.22.0"
+  }
+}

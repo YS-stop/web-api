@@ -1,0 +1,39 @@
+# ---------- 依赖 ----------
+node_modules/
+package-lock.json
+
+# ---------- 本地 AI 协作说明（仅本地，不入库） ----------
+AGENTS.md
+
+# ---------- 密钥 / 环境变量（切勿提交） ----------
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ---------- 构建产物 ----------
+dist/
+dist-ssr/
+*.local
+# 本地构建/验证临时目录，不得入库
+.tmp-build/
+
+# ---------- 日志 ----------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

@@ -1,0 +1,56 @@
+# ---------- 依赖 ----------
+node_modules/
+package-lock.json
+
+# ---------- 本地 AI 协作说明（仅本地，不入库） ----------
+AGENTS.md
+
+# ---------- 密钥 / 环境变量（切勿提交） ----------
+.env
+.env.*
+!.env.example
+
+# ---------- 运行时数据（用户上传、生成结果、业务数据） ----------
+library/
+models/
+.offload_cache/
+*.tmpdir/
+
+# ---------- 本地模型权重 / Python 虚拟环境（不入库） ----------
+# 注意：只排除虚拟环境与模型权重，Python 源码本身属于项目代码，必须入库
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# ---------- 日志与临时文件 ----------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.sw?
+
+# ---------- 构建产物 ----------
+dist/
+build/
+
+# ---------- 本地调试脚本（_ 前缀为个人测试脚本，不入库） ----------
+# tmp-*.mjs 在仓库任意层级都视为临时验证脚本：这类脚本常放在 api/ 根目录直接跑，
+# 只写 server/tmp-*.mjs 会漏掉，容易误提交
+tmp-*.mjs
+server/_*.js
