@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     AlertTriangle,
     ArrowRight,
@@ -35,7 +35,8 @@ interface ProjectDetailPageProps {
     projectId: string;
     user: { name?: string; avatarUrl?: string; role?: string } | null;
     onBack: () => void;
-    onEnterWorkflow?: (projectId: string) => void;
+    /** 进入画布：带上集号，画布直接定位到该集 */
+    onEnterWorkflow?: (projectId: string, episode?: number) => void;
 }
 
 type DetailTabKey = 'overview' | 'episodes' | 'assets' | 'tasks' | 'versions' | 'reviews' | 'settings';
@@ -666,19 +667,58 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
         setToast('申请已提交，等待主管审批');
     };
 
-    const handleEnterWorkflow = () => {
+    const handleEnterWorkflow = (episode?: number) => {
         try {
             localStorage.setItem(`project-started:${projectId}`, '1');
+            // 记住这次进入的是哪一集：画布与工作流页都以这个 key 作为「当前集」，
+            // 从列表/详情不同入口进来都能回到同一集。
+            if (episode) localStorage.setItem(`shot-editor:active-episode:${projectId}`, String(episode));
         } catch {
             /* 忽略浏览器存储不可用 */
         }
-        onEnterWorkflow?.(projectId);
+        onEnterWorkflow?.(projectId, episode);
     };
 
     const withCurrentOption = (options: string[], current: string): string[] =>
         current && !options.includes(current) ? [current, ...options] : options;
 
-    const visibleEpisodes = EPISODE_RECORDS.filter((episode) => {
+    /**
+     * 分集列表：优先用项目真实的剧本解析结果。
+     * 之前这里直接用写死的 EPISODE_RECORDS，导致点进项目看到的永远是
+     * 演示的「第 01 集 雨夜重逢」，与该项目实际的分集对不上。
+     */
+    const episodeRecords = useMemo<EpisodeRecord[]>(() => {
+        const list = project?.scriptAnalysis?.episodes || [];
+        if (list.length === 0) return EPISODE_RECORDS;
+        return list.map((ep) => {
+            const assets = ep.assets;
+            const countOf = (k: 'characters' | 'scenes' | 'props') => assets?.[k]?.length ?? 0;
+            const chars = countOf('characters');
+            const scenes = countOf('scenes');
+            const props = countOf('props');
+            const total = chars + scenes + props;
+            const sec = Math.max(0, Math.round(ep.durationSeconds || 0));
+            const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+            const ss = String(sec % 60).padStart(2, '0');
+            return {
+                id: String(ep.episode).padStart(2, '0'),
+                title: ep.title || `第 ${ep.episode} 集`,
+                detail: `${(ep.wordCount || 0).toLocaleString()} 字 · ${mm}:${ss}`,
+                assets: total > 0 ? `${chars} / ${scenes} / ${props}` : '未识别',
+                assetKinds: total > 0 ? '角色 / 场景 / 道具' : '待识别',
+                storyboard: '—',
+                video: '—',
+                final: '未开始',
+                finalTone: 'gray',
+                stage: '待制作',
+                stageTone: 'gray',
+                review: '—',
+                updated: ep.content ? '已切分' : '—',
+            };
+        });
+    }, [project]);
+
+    const visibleEpisodes = episodeRecords.filter((episode) => {
         const keyword = appliedEpisodeFilters.query.trim().toLowerCase();
         const matchesKeyword = !keyword || `${episode.id} ${episode.title}`.toLowerCase().includes(keyword);
         const matchesStage = appliedEpisodeFilters.stage === '全部阶段' || episode.stage === appliedEpisodeFilters.stage;
@@ -782,7 +822,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                             )}
                             <button
                                 type="button"
-                                onClick={handleEnterWorkflow}
+                                onClick={() => handleEnterWorkflow()}
                                 className="flex h-9 items-center gap-1.5 rounded-md bg-[#4558dc] px-4 text-[14px] font-medium text-white transition-colors hover:bg-[#5c6fe4]"
                             >
                                 <GitBranch size={15} />
@@ -842,9 +882,16 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                     className={`relative flex h-full shrink-0 items-center gap-1.5 whitespace-nowrap text-[14px] transition-colors ${activeTab === tab.key ? 'font-semibold text-[#4558dc]' : 'text-[#4e5969] hover:text-[#4558dc]'}`}
                                 >
                                     {tab.label}
-                                    {'count' in tab && tab.count ? (
-                                        <span className="inline-flex h-[18px] min-w-[24px] items-center justify-center rounded-full bg-[#f2f3f5] px-1.5 text-[10px] font-normal text-[#86909c]">{tab.count}</span>
-                                    ) : null}
+                                    {(() => {
+                                        // 分集数量用真实解析结果，避免写着演示的 80 集
+                                        const count =
+                                            tab.key === 'episodes'
+                                                ? project?.scriptAnalysis?.episodes?.length || tab.count
+                                                : tab.count;
+                                        return count ? (
+                                            <span className="inline-flex h-[18px] min-w-[24px] items-center justify-center rounded-full bg-[#f2f3f5] px-1.5 text-[10px] font-normal text-[#86909c]">{count}</span>
+                                        ) : null;
+                                    })()}
                                     {'dot' in tab && tab.dot ? <span className="h-1.5 w-1.5 rounded-full bg-[#ff4d4f]" /> : null}
                                     {activeTab === tab.key && <span className="absolute bottom-0 left-0 h-[2px] w-full rounded-full bg-[#4558dc]" />}
                                 </button>
@@ -864,7 +911,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                 <section className="flex min-h-[285px] flex-col overflow-hidden rounded-[10px] border border-[#e9ebf2] bg-white shadow-[0_2px_8px_rgba(33,43,83,0.03)]">
                                     <div className="flex h-[64px] shrink-0 items-center justify-between border-b border-[#eef0f6] px-6">
                                         <h2 className="text-[16px] font-semibold text-[#1c2745]">生产总览</h2>
-                                        <button type="button" onClick={handleEnterWorkflow} className="text-[13px] text-[#4558dc] transition-colors hover:text-[#6878e7]">打开第 01 集画布</button>
+                                        <button type="button" onClick={() => handleEnterWorkflow()} className="text-[13px] text-[#4558dc] transition-colors hover:text-[#6878e7]">打开第 01 集画布</button>
                                     </div>
                                     <div className="flex flex-1 flex-col px-6 pb-6 pt-6">
                                         <div className="flex items-center overflow-x-auto pb-1">
@@ -943,7 +990,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                             </td>
                                                             <td className="px-4 py-[17px]">{episode.updated}</td>
                                                             <td className="px-4 py-[17px]">
-                                                                <button type="button" onClick={handleEnterWorkflow} className="text-[#4558dc] transition-colors hover:text-[#6878e7]">进入画布</button>
+                                                                <button type="button" onClick={() => handleEnterWorkflow()} className="text-[#4558dc] transition-colors hover:text-[#6878e7]">进入画布</button>
                                                             </td>
                                                         </tr>
                                                     ))}
@@ -997,7 +1044,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                         </button>
                                         <button
                                             type="button"
-                                            onClick={handleEnterWorkflow}
+                                            onClick={() => handleEnterWorkflow()}
                                             className="h-8 rounded-[4px] bg-[#4558dc] px-3 text-[12px] font-medium text-white transition-colors hover:bg-[#5c6fe4]"
                                         >
                                             进入最近画布
@@ -1136,7 +1183,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                         <td className="whitespace-nowrap px-4 py-4 align-middle text-[#4e5969]">{episode.updated}</td>
                                                         <td className="px-4 py-4 align-middle">
                                                             <div className="flex items-center gap-4 whitespace-nowrap">
-                                                                <button type="button" onClick={handleEnterWorkflow} className="text-[#2f74ff] transition-colors hover:text-[#5c8fff]">进入画布</button>
+                                                                <button type="button" onClick={() => handleEnterWorkflow(Number(episode.id))} className="text-[#2f74ff] transition-colors hover:text-[#5c8fff]">进入画布</button>
                                                                 <button type="button" onClick={() => setToast(`查看第 ${episode.id} 集制作进度`)} className="text-[#2f74ff] transition-colors hover:text-[#5c8fff]">进度</button>
                                                                 <button
                                                                     type="button"

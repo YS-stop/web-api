@@ -1028,7 +1028,10 @@ export default function App() {
         projectId={decodeURIComponent(projectDetailMatch[1])}
         user={user}
         onBack={() => navigate('/')}
-        onEnterWorkflow={(pid) => navigate(`/workflow/${encodeURIComponent(pid)}`)}
+        onEnterWorkflow={(pid, episode) =>
+          // 项目详情「进入画布」进的是新的制作画布（/canvas-studio），并带上集号
+          navigate(`/canvas-studio/${encodeURIComponent(pid)}${episode ? `?episode=${episode}` : ''}`)
+        }
       />
     );
   }
@@ -1047,9 +1050,12 @@ export default function App() {
   // 项目制作画布（/canvas-studio/:projectId）—— 项目列表「进入画布」使用，旧画布入口保持不变
   const projectCanvasStudioMatch = location.pathname.match(/^\/canvas-studio\/([^/]+)$/);
   if (projectCanvasStudioMatch) {
+    // 从项目详情按集进入时带 ?episode=N，画布直接定位到该集
+    const episodeParam = Number(new URLSearchParams(location.search).get('episode')) || undefined;
     return (
       <ProjectCanvasStudioPage
         projectId={decodeURIComponent(projectCanvasStudioMatch[1])}
+        initialEpisode={episodeParam}
         onBack={() => navigate('/')}
       />
     );
@@ -1058,11 +1064,16 @@ export default function App() {
   // 项目工作流页（/workflow/:projectId）
   const workflowMatch = location.pathname.match(/^\/workflow\/([^/]+)$/);
   if (workflowMatch) {
+    // 从项目详情按集进入时带 ?episode=N，工作流直接定位到该集
+    const workflowEpisode = Number(new URLSearchParams(location.search).get('episode')) || undefined;
     return (
       <WorkflowPage
         projectId={decodeURIComponent(workflowMatch[1])}
+        initialEpisode={workflowEpisode}
         onBack={() => navigate('/')}
-        onEnterCanvas={(pid) => navigate(`/canvas/${encodeURIComponent(pid)}`)}
+        onEnterCanvas={(pid) =>
+          navigate(`/canvas/${encodeURIComponent(pid)}${workflowEpisode ? `?episode=${workflowEpisode}` : ''}`)
+        }
       />
     );
   }

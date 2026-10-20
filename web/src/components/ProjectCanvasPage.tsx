@@ -141,9 +141,20 @@ interface ContextMenuState {
 interface ProjectCanvasPageProps {
     projectId: string;
     onBack: () => void;
+    /**
+     * 画布主题：
+     *   dark  = /canvas/:projectId 旧画布（默认，保持原深色观感）
+     *   light = /canvas-studio/:projectId 白色画布（同一套节点与交互，仅换配色）
+     */
+    theme?: 'dark' | 'light';
+    /** 进入时指定的集号（集号，不是数组下标） */
+    initialEpisode?: number;
 }
 
-export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId, onBack }) => {
+export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId, onBack, theme = 'dark', initialEpisode }) => {
+    const isLight = theme === 'light';
+    const canvasTheme: 'dark' | 'light' = isLight ? 'light' : 'dark';
+
     // ---------- 项目数据 ----------
     const [project, setProject] = useState<Project | null>(null);
     const [loading, setLoading] = useState(true);
@@ -151,7 +162,8 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
 
     // ---------- 剧本/资产面板 ----------
     const [scriptPanelOpen, setScriptPanelOpen] = useState(true);
-    const [panelTab, setPanelTab] = useState<PanelTab>('episodes');
+    /** 浅色画布（/canvas-studio）默认停在「人物」，深色画布默认停在「分集」 */
+    const [panelTab, setPanelTab] = useState<PanelTab>(isLight ? 'characters' : 'episodes');
     const [activeEpisode, setActiveEpisode] = useState(0);
     const [episodeSearch, setEpisodeSearch] = useState('');
     const [toolbarCollapsed, setToolbarCollapsed] = useState(true);
@@ -402,6 +414,16 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
     const episodes = analysis?.episodes || [];
     const globalAssets = analysis?.assets || { characters: [], scenes: [], props: [] };
 
+    // ---------- 从项目详情按集进入：定位到指定集 ----------
+    const initialEpisodeAppliedRef = useRef(false);
+    useEffect(() => {
+        if (initialEpisodeAppliedRef.current || !initialEpisode || episodes.length === 0) return;
+        const index = episodes.findIndex((e) => Number(e.episode) === Number(initialEpisode));
+        initialEpisodeAppliedRef.current = true;
+        if (index >= 0) setActiveEpisode(index);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [episodes, initialEpisode]);
+
     // ---------- 资产确认数据（继承工作流，按集隔离） ----------
     // 画布侧直接读取工作流「资产确认」的结果；每集独立取用，互不污染。
     const assetStore = useMemo(() => loadAssetStore(projectId), [projectId]);
@@ -448,6 +470,27 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
         if (!kw) return episodes;
         return episodes.filter((e) => (e.title + String(e.episode)).toLowerCase().includes(kw));
     }, [episodes, episodeSearch]);
+
+    /**
+     * 左侧面板 Tab：
+     *   深色画布沿用「分集 / 分镜 / 全剧资产 / 人物 / 场景 / 道具」；
+     *   浅色画布把人物、场景、道具、分镜提到前面，当作项目资产框用。
+     */
+    const panelTabs = useMemo<[PanelTab, string][]>(() => {
+        const all: [PanelTab, string][] = [
+            ['episodes', `分集 (${episodes.length})`],
+            ['shots', '分镜'],
+            ['assets', '全剧资产'],
+            ['characters', '人物'],
+            ['scenes', '场景'],
+            ['props', '道具'],
+        ];
+        if (!isLight) return all;
+        const order: PanelTab[] = ['characters', 'scenes', 'props', 'shots', 'episodes', 'assets'];
+        return order
+            .map((key) => all.find(([k]) => k === key))
+            .filter((item): item is [PanelTab, string] => Boolean(item));
+    }, [episodes.length, isLight]);
 
     const currentEpisode: AnalyzedEpisode | undefined = episodes[activeEpisode];
     // 供 useGeneration 的任务台账回调读取当前集
@@ -1146,7 +1189,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
 
     if (loading) {
         return (
-            <div className="w-screen h-screen bg-[#0b0b12] flex items-center justify-center text-neutral-500 text-sm">
+            <div className={`w-screen h-screen flex items-center justify-center text-sm ${isLight ? 'bg-[#f7f8fc] text-[#8a93a5]' : 'bg-[#0b0b12] text-neutral-500'}`}>
                 <Loader2 size={20} className="animate-spin mr-2" />
                 正在加载项目画布…
             </div>
@@ -1155,7 +1198,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
 
     if (loadError || !project) {
         return (
-            <div className="w-screen h-screen bg-[#0b0b12] flex flex-col items-center justify-center gap-4 text-neutral-400">
+            <div className={`w-screen h-screen flex flex-col items-center justify-center gap-4 ${isLight ? 'bg-[#f7f8fc] text-[#6b7488]' : 'bg-[#0b0b12] text-neutral-400'}`}>
                 <div className="text-sm">{loadError || '项目不存在'}</div>
                 <button
                     onClick={onBack}
@@ -1168,11 +1211,60 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
     }
 
     return (
-        <div className="w-screen h-screen bg-[#0b0b12] text-white overflow-hidden select-none font-sans">
+        <div
+            className={`w-screen h-screen overflow-hidden select-none font-sans ${
+                isLight ? 'canvas-light-scope bg-[#f7f8fc] text-[#202637]' : 'bg-[#0b0b12] text-white'
+            }`}
+        >
+            {/*
+              浅色主题覆盖层：旧画布里大量深色语义的 Tailwind 工具类（白字/浅灰字/半透明白底）
+              在浅色背景下需要整体翻转，这里用作用域规则统一处理，避免逐处改 300+ 个类名。
+            */}
+            {isLight && (
+                <style>{`
+                    .canvas-light-scope [class~="text-white"]:not([class*="bg-violet"]):not([class*="bg-gradient"]):not([class*="bg-blue"]):not([class*="bg-red"]):not([class*="bg-emerald"]):not([class*="bg-[#5b5bf6]"]) { color: #202637; }
+                    .canvas-light-scope [class~="text-neutral-100"],
+                    .canvas-light-scope [class~="text-neutral-200"] { color: #2b3242; }
+                    .canvas-light-scope [class~="text-neutral-300"] { color: #3f4859; }
+                    .canvas-light-scope [class~="text-neutral-400"] { color: #6b7488; }
+                    .canvas-light-scope [class~="text-neutral-500"] { color: #8a93a5; }
+                    .canvas-light-scope [class~="text-neutral-600"] { color: #9aa2b2; }
+                    .canvas-light-scope [class~="text-neutral-700"] { color: #b3b9c6; }
+                    .canvas-light-scope [class~="text-violet-200"] { color: #5b46c9; }
+                    .canvas-light-scope [class~="text-violet-300"] { color: #6d5ae0; }
+                    .canvas-light-scope [class~="hover:text-violet-200"]:hover { color: #5b46c9; }
+                    .canvas-light-scope [class~="border-white/10"],
+                    .canvas-light-scope [class~="border-white/8"],
+                    .canvas-light-scope [class~="border-white/5"] { border-color: #e6e9f2; }
+                    .canvas-light-scope [class~="bg-white/5"],
+                    .canvas-light-scope [class~="bg-white/[0.03]"] { background-color: #f7f8fb; }
+                    .canvas-light-scope [class~="bg-white/[.06]"],
+                    .canvas-light-scope [class~="bg-white/[0.06]"] { background-color: #f2f4f9; }
+                    .canvas-light-scope [class~="bg-white/10"] { background-color: #eef0f6; }
+                    .canvas-light-scope [class~="border-white/[0.08]"],
+                    .canvas-light-scope [class~="border-white/[.08]"] { border-color: #eceff5; }
+                    .canvas-light-scope [class~="hover:bg-white/5"]:hover,
+                    .canvas-light-scope [class~="hover:bg-white/[0.06]"]:hover { background-color: #f2f4f9; }
+                    .canvas-light-scope [class~="hover:bg-white/10"]:hover { background-color: #eef0f6; }
+                    .canvas-light-scope [class~="hover:text-white"]:hover { color: #202637; }
+                    .canvas-light-scope [class~="hover:bg-white/[.12]"]:hover { background-color: #eceff6; }
+                    .canvas-light-scope [class~="disabled:bg-white/[0.06]"]:disabled { background-color: #f2f4f9; }
+                    .canvas-light-scope [class~="bg-[#131318]"] { background-color: #eef1f6; }
+                    .canvas-light-scope [class~="bg-black/25"] { background-color: #f4f5f9; }
+                    .canvas-light-scope [class~="bg-black/40"] { background-color: rgba(15, 23, 42, .12); }
+                    .canvas-light-scope ::-webkit-scrollbar { width: 7px; height: 7px; }
+                    .canvas-light-scope ::-webkit-scrollbar-thumb { background: rgba(115, 125, 150, .28); border-radius: 999px; }
+                    .canvas-light-scope ::-webkit-scrollbar-track { background: transparent; }
+                `}</style>
+            )}
             {/* ============ 返回按钮（独立，始终显示） ============ */}
             <button
                 onClick={onBack}
-                className="fixed top-4 left-4 z-50 h-11 px-2.5 rounded-lg flex items-center justify-center border border-white/10 bg-[#161521]/85 backdrop-blur-xl text-neutral-100 hover:bg-white/[.12] transition-colors"
+                className={`fixed top-4 left-4 z-50 h-11 px-2.5 rounded-lg flex items-center justify-center border backdrop-blur-xl transition-colors ${
+                    isLight
+                        ? 'border-[#e6e9f2] bg-white/90 text-[#4b5568] hover:bg-[#f4f5f9] shadow-[0_2px_8px_rgba(25,34,58,.06)]'
+                        : 'border-white/10 bg-[#161521]/85 text-neutral-100 hover:bg-white/[.12]'
+                }`}
                 title="返回项目列表"
             >
                 <ArrowLeft size={15} />
@@ -1182,7 +1274,11 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             {headerCollapsed ? (
                 <button
                     onClick={() => setHeaderCollapsed(false)}
-                    className="fixed top-4 left-14 z-50 w-8 h-8 rounded-lg flex items-center justify-center border border-white/10 bg-[#161521]/85 backdrop-blur-xl text-neutral-300 hover:text-white transition-colors"
+                    className={`fixed top-4 left-14 z-50 w-8 h-8 rounded-lg flex items-center justify-center border backdrop-blur-xl transition-colors ${
+                        isLight
+                            ? 'border-[#e6e9f2] bg-white/90 text-[#6b7488] hover:text-[#202637]'
+                            : 'border-white/10 bg-[#161521]/85 text-neutral-300 hover:text-white'
+                    }`}
                     title="展开项目信息"
                 >
                     <ChevronDown size={16} />
@@ -1190,11 +1286,19 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             ) : (
                 <header
                     className="fixed top-4 left-14 z-50 flex items-center gap-2.5 h-11 pl-1.5 pr-2 rounded-xl border shadow-lg backdrop-blur-xl"
-                    style={{
-                        background: 'rgba(18, 17, 29, .85)',
-                        borderColor: 'rgba(196, 181, 253, .13)',
-                        boxShadow: '0 10px 28px rgba(0, 0, 0, .28)',
-                    }}
+                    style={
+                        isLight
+                            ? {
+                                background: 'rgba(255, 255, 255, .92)',
+                                borderColor: '#e6e9f2',
+                                boxShadow: '0 10px 28px rgba(25, 34, 58, .08)',
+                            }
+                            : {
+                                background: 'rgba(18, 17, 29, .85)',
+                                borderColor: 'rgba(196, 181, 253, .13)',
+                                boxShadow: '0 10px 28px rgba(0, 0, 0, .28)',
+                            }
+                    }
                 >
                     <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-500 to-cyan-400 flex items-center justify-center shrink-0">
                         <Film size={15} className="text-white" />
@@ -1257,7 +1361,11 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                     <Plus size={14} />
                 </button>
             ) : (
-                <div className="fixed left-5 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 p-1.5 rounded-2xl shadow-2xl backdrop-blur-xl z-50 bg-[#161521]/90 border border-violet-200/10">
+                <div
+                    className={`fixed left-5 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 p-1.5 rounded-2xl shadow-2xl backdrop-blur-xl z-50 border ${
+                        isLight ? 'bg-white/95 border-[#e6e9f2]' : 'bg-[#161521]/90 border-violet-200/10'
+                    }`}
+                >
                     <button
                         onClick={() => setToolbarCollapsed(true)}
                         className="w-9 h-9 rounded-xl flex items-center justify-center text-neutral-400 hover:text-white hover:bg-white/10 transition-all duration-200"
@@ -1307,7 +1415,9 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             {/* ============ 剧本 / 资产侧边面板 ============ */}
             {scriptPanelOpen && (
                 <aside
-                    className="fixed left-[76px] top-[88px] bottom-6 w-[380px] rounded-2xl border border-white/10 bg-[#161521]/92 backdrop-blur-xl shadow-2xl z-40 flex flex-col overflow-hidden"
+                    className={`fixed left-[76px] top-[88px] bottom-6 w-[380px] rounded-2xl border backdrop-blur-xl shadow-2xl z-40 flex flex-col overflow-hidden ${
+                        isLight ? 'border-[#e6e9f2] bg-white/95' : 'border-white/10 bg-[#161521]/92'
+                    }`}
                 >
                     {/* 面板头 */}
                     <div className="flex items-center justify-between px-4 pt-3.5 pb-2.5 border-b border-white/8">
@@ -1325,14 +1435,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
 
                     {/* Tab */}
                     <div className="flex items-center gap-1 px-3 pt-2.5 pb-1.5 overflow-x-auto shrink-0">
-                        {([
-                            ['episodes', `分集 (${episodes.length})`],
-                            ['shots', '分镜'],
-                            ['assets', '全剧资产'],
-                            ['characters', '人物'],
-                            ['scenes', '场景'],
-                            ['props', '道具'],
-                        ] as const).map(([key, label]) => (
+                        {panelTabs.map(([key, label]) => (
                             <button
                                 key={key}
                                 onClick={() => setPanelTab(key)}
@@ -1600,7 +1703,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                 isOpen={assetLibraryOpen}
                 onClose={() => setAssetLibraryOpen(false)}
                 onSelectAsset={handleLibrarySelect}
-                canvasTheme="dark"
+                canvasTheme={canvasTheme}
             />
 
             {/* ============ 模板库面板 ============ */}
@@ -1608,7 +1711,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                 isOpen={templateLibraryOpen}
                 onClose={() => setTemplateLibraryOpen(false)}
                 onApplyTemplate={handleApplyTemplate}
-                canvasTheme="dark"
+                canvasTheme={canvasTheme}
             />
 
             {/* ============ 画布 ============ */}
@@ -1617,8 +1720,9 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                 id="project-canvas-bg"
                 className="absolute inset-0 cursor-default"
                 style={{
-                    background:
-                        'radial-gradient(circle at 50% -20%, rgba(112, 77, 206, .16), transparent 38%), radial-gradient(circle at 0% 100%, rgba(14, 165, 233, .08), transparent 32%)',
+                    background: isLight
+                        ? '#ffffff'
+                        : 'radial-gradient(circle at 50% -20%, rgba(112, 77, 206, .16), transparent 38%), radial-gradient(circle at 0% 100%, rgba(14, 165, 233, .08), transparent 32%)',
                 }}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
@@ -1639,9 +1743,11 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                     <div
                         className="absolute -top-[10000px] -left-[10000px] w-[20000px] h-[20000px]"
                         style={{
-                            backgroundImage: 'radial-gradient(rgba(170, 155, 235, .34) 1px, transparent 1px)',
-                            backgroundSize: '24px 24px',
-                            opacity: 0.42,
+                            backgroundImage: isLight
+                                ? 'radial-gradient(rgba(130, 144, 174, .55) 1px, transparent 1px)'
+                                : 'radial-gradient(rgba(170, 155, 235, .34) 1px, transparent 1px)',
+                            backgroundSize: isLight ? '22px 22px' : '24px 24px',
+                            opacity: isLight ? 1 : 0.42,
                         }}
                     />
 
@@ -1650,7 +1756,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                         <ConnectionsLayer
                             nodes={nodes}
                             viewport={viewport}
-                            canvasTheme="dark"
+                            canvasTheme={canvasTheme}
                             isDraggingConnection={isDraggingConnection}
                             connectionStart={connectionStart}
                             tempConnectionEnd={tempConnectionEnd}
@@ -1714,7 +1820,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                                     }
                                 }}
                                 zoom={viewport.zoom}
-                                canvasTheme="dark"
+                                canvasTheme={canvasTheme}
                                 onDragStart={() => setIsDraggingNodeToChat(true)}
                                 onDragEnd={() => setIsDraggingNodeToChat(false)}
                             />
@@ -1740,7 +1846,11 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             </div>
 
             {/* ============ 左下角缩放控件 ============ */}
-            <div className="fixed bottom-5 left-5 z-50 flex items-center gap-1 px-1.5 py-0.5 rounded-md backdrop-blur-xl bg-[#161521]/45 border border-white/5 opacity-60 hover:opacity-100 transition-opacity duration-200">
+            <div
+                className={`fixed bottom-5 left-5 z-50 flex items-center gap-1 px-1.5 py-0.5 rounded-md backdrop-blur-xl border opacity-60 hover:opacity-100 transition-opacity duration-200 ${
+                    isLight ? 'bg-white/90 border-[#e6e9f2]' : 'bg-[#161521]/45 border-white/5'
+                }`}
+            >
                 <button
                     onClick={() => zoomBy(-0.2)}
                     className="w-4 h-4 rounded flex items-center justify-center text-neutral-500 hover:text-white hover:bg-white/10 transition-colors"
@@ -1778,7 +1888,11 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                         className="fixed z-[100]"
                         style={{ left: contextMenu.x, top: contextMenu.y }}
                     >
-                        <div className="min-w-[150px] rounded-xl bg-[#1a1a28] border border-white/10 shadow-2xl py-1 overflow-hidden">
+                        <div
+                            className={`min-w-[150px] rounded-xl border shadow-2xl py-1 overflow-hidden ${
+                                isLight ? 'bg-white border-[#e6e9f2]' : 'bg-[#1a1a28] border-white/10'
+                            }`}
+                        >
                             {contextMenu.nodeId ? (
                                 <button
                                     onClick={() => {
@@ -1827,12 +1941,18 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             )}
             {/* 聊天智能体 */}
             <ChatBubble onClick={() => setIsChatOpen(prev => !prev)} isOpen={isChatOpen} />
-            <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} isDraggingNode={isDraggingNodeToChat} canvasTheme="dark" scope={`project-${projectId}`} />
+            <ChatPanel isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} isDraggingNode={isDraggingNodeToChat} canvasTheme={canvasTheme} scope={`project-${projectId}`} />
 
             {/* 分镜导入结果提示 */}
             {shotsImportTip && (
                 <div className="fixed left-1/2 top-24 -translate-x-1/2 z-[90] pointer-events-none">
-                    <div className="rounded-lg bg-neutral-900/95 border border-violet-500/30 px-4 py-2 text-[12px] text-violet-200 shadow-xl">
+                    <div
+                        className={`rounded-lg border px-4 py-2 text-[12px] shadow-xl ${
+                            isLight
+                                ? 'bg-white border-[#d8dcf7] text-[#4f51d9]'
+                                : 'bg-neutral-900/95 border-violet-500/30 text-violet-200'
+                        }`}
+                    >
                         {shotsImportTip}
                     </div>
                 </div>
@@ -1857,6 +1977,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                 onClose={handleCloseMerge}
                 onReorder={handleReorderClips}
                 onMerge={handleMerge}
+                canvasTheme={canvasTheme}
             />
         </div>
     );

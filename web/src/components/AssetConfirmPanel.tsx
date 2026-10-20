@@ -423,7 +423,7 @@ const buildPropPrompt = (asset: EditableAsset, lookName?: string): string => {
  * 依据分类与资产信息拼装生成提示词（可指定造型）。
  * 画面风格由「基本信息 → 内容类型」统一约束，避免题材不符。
  */
-const buildAssetPrompt = (
+export const buildAssetPrompt = (
     category: AssetCategory,
     asset: EditableAsset,
     lookName?: string,

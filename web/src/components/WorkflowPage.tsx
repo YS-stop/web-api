@@ -36,6 +36,8 @@ const STEPS = [
 
 interface WorkflowPageProps {
     projectId: string;
+    /** 从项目详情按集进入时指定的集号；不传则读上次记录的当前集 */
+    initialEpisode?: number;
     onBack: () => void;
     /** 进入项目画布（二次确认后触发） */
     onEnterCanvas: (projectId: string) => void;
@@ -80,7 +82,7 @@ const saveEpisodeTitles = (projectId: string, titles: Record<number, string>) =>
 // 页面组件
 // ============================================================================
 
-export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, onBack, onEnterCanvas }) => {
+export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEpisode, onBack, onEnterCanvas }) => {
     const [project, setProject] = useState<Project | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState('');
@@ -138,11 +140,43 @@ export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, onBack, o
         setActiveEpisodeIndex((i) => Math.min(i, Math.max(0, episodes.length - 1)));
     }, [episodes.length]);
 
+    /**
+     * 按集号定位：优先用 URL 传入的集（从项目详情点某集进来），
+     * 其次用上次记住的当前集，保证「详情点第 4 集 → 工作流停在第 4 集」。
+     */
+    useEffect(() => {
+        if (episodes.length === 0) return;
+        let target = initialEpisode;
+        if (!target) {
+            try {
+                const saved = Number(localStorage.getItem(`shot-editor:active-episode:${projectId}`));
+                if (saved > 0) target = saved;
+            } catch {
+                /* 忽略存储不可用 */
+            }
+        }
+        if (!target) return;
+        const idx = episodes.findIndex((ep) => ep.episode === target);
+        if (idx >= 0) setActiveEpisodeIndex(idx);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialEpisode, episodes.length, projectId]);
+
     /** 集标题合并后供各步骤共用 */
     const mergedEpisodes: AnalyzedEpisode[] = useMemo(
         () => episodes.map((ep) => ({ ...ep, title: episodeTitles[ep.episode] ?? ep.title })),
         [episodes, episodeTitles]
     );
+
+    /** 切换集时记住，供画布与详情页共用 */
+    useEffect(() => {
+        const ep = mergedEpisodes[activeEpisodeIndex];
+        if (!ep) return;
+        try {
+            localStorage.setItem(`shot-editor:active-episode:${projectId}`, String(ep.episode));
+        } catch {
+            /* 忽略存储不可用 */
+        }
+    }, [activeEpisodeIndex, mergedEpisodes, projectId]);
 
     // 资产确认结果（含生成图）：从本地恢复，并随资产确认面板的改动更新
     const [assetState, setAssetState] = useState<EpisodeMap | null>(() => loadAssetStore(projectId));

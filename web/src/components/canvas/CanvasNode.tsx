@@ -281,7 +281,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
                 transformOrigin: 'bottom center'
               }}
             >
-              <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-900/95 rounded-full border border-neutral-700 shadow-xl backdrop-blur-md">
+              <div className={`flex items-center gap-1 px-2 py-1.5 rounded-full border shadow-xl backdrop-blur-md ${isDark ? 'bg-neutral-900/95 border-neutral-700' : 'bg-white/95 border-[#e6e9f2]'}`}>
                 {/* Change Angle Button - Re-enable tweaking */}
                 <button
                   onClick={() => onUpdate(data.id, {
@@ -291,7 +291,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
                   onPointerDown={(e) => e.stopPropagation()}
                   className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-colors ${data.angleMode
                     ? 'bg-blue-500 text-white'
-                    : 'text-neutral-300 hover:bg-neutral-700 hover:text-white'
+                    : isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'
                     }`}
                 >
                   <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -308,7 +308,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
                 <button
                   onClick={() => onExpand?.(data.resultUrl!)}
                   onPointerDown={(e) => e.stopPropagation()}
-                  className="p-1.5 text-neutral-300 hover:bg-neutral-700 hover:text-white rounded-full transition-colors"
+                  className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'}`}
                   title={t('common.viewFullSize')}
                 >
                   <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -358,7 +358,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
                     }
                   }}
                   onPointerDown={(e) => e.stopPropagation()}
-                  className="p-1.5 text-neutral-300 hover:bg-neutral-700 hover:text-white rounded-full transition-colors"
+                  className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'}`}
                   title={t('common.download')}
                 >
                   <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -670,7 +670,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
               transformOrigin: 'bottom center'
             }}
           >
-            <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-900/95 rounded-full border border-neutral-700 shadow-xl backdrop-blur-md">
+            <div className={`flex items-center gap-1 px-2 py-1.5 rounded-full border shadow-xl backdrop-blur-md ${isDark ? 'bg-neutral-900/95 border-neutral-700' : 'bg-white/95 border-[#e6e9f2]'}`}>
               {/* Change Angle and Upload buttons - Hidden for storyboard-generated scenes */}
               {!(data.prompt && data.prompt.startsWith('Extract panel #')) && (
                 <>
@@ -683,7 +683,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
                     onPointerDown={(e) => e.stopPropagation()}
                     className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-colors ${data.angleMode
                       ? 'bg-blue-500 text-white'
-                      : 'text-neutral-300 hover:bg-neutral-700 hover:text-white'
+                      : isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'
                       }`}
                   >
                     <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -699,7 +699,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     onPointerDown={(e) => e.stopPropagation()}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-neutral-300 hover:bg-neutral-700 hover:text-white rounded-full transition-colors"
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-full transition-colors ${isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'}`}
                     title={t('common.uploadImage')}
                   >
                     <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -734,7 +734,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
               <button
                 onClick={() => onExpand?.(data.resultUrl!)}
                 onPointerDown={(e) => e.stopPropagation()}
-                className="p-1.5 text-neutral-300 hover:bg-neutral-700 hover:text-white rounded-full transition-colors"
+                className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'}`}
                 title={t('common.viewFullSize')}
               >
                 <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -784,7 +784,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
                   }
                 }}
                 onPointerDown={(e) => e.stopPropagation()}
-                className="p-1.5 text-neutral-300 hover:bg-neutral-700 hover:text-white rounded-full transition-colors"
+                className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'}`}
                 title={t('common.download')}
               >
                 <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -832,12 +832,12 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
               transformOrigin: 'bottom center'
             }}
           >
-            <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-900/95 rounded-full border border-neutral-700 shadow-xl backdrop-blur-md">
+            <div className={`flex items-center gap-1 px-2 py-1.5 rounded-full border shadow-xl backdrop-blur-md ${isDark ? 'bg-neutral-900/95 border-neutral-700' : 'bg-white/95 border-[#e6e9f2]'}`}>
               {/* Expand Button */}
               <button
                 onClick={() => onExpand?.(data.resultUrl!)}
                 onPointerDown={(e) => e.stopPropagation()}
-                className="p-1.5 text-neutral-300 hover:bg-neutral-700 hover:text-white rounded-full transition-colors"
+                className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'}`}
                 title={t('common.viewFullSize')}
               >
                 <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -878,7 +878,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
                   }
                 }}
                 onPointerDown={(e) => e.stopPropagation()}
-                className="p-1.5 text-neutral-300 hover:bg-neutral-700 hover:text-white rounded-full transition-colors"
+                className={`p-1.5 rounded-full transition-colors ${isDark ? 'text-neutral-300 hover:bg-neutral-700 hover:text-white' : 'text-neutral-600 hover:bg-neutral-200 hover:text-neutral-900'}`}
                 title={t('common.download')}
               >
                 <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -975,6 +975,7 @@ export const CanvasNode: React.FC<CanvasNodeProps> = ({
             onImageToImage={onImageToImage}
             onImageToVideo={onImageToVideo}
             onUpdate={onUpdate}
+            canvasTheme={canvasTheme}
           />
         </div>
 

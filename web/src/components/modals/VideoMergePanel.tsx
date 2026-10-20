@@ -78,6 +78,8 @@ interface VideoMergePanelProps {
             episode?: number;
         }
     ) => void;
+    /** 画布主题：light 时面板改为浅色（白色画布 /canvas-studio 使用） */
+    canvasTheme?: 'dark' | 'light';
 }
 
 // ============================================================================
@@ -117,6 +119,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
     onClose,
     onReorder,
     onMerge,
+    canvasTheme = 'dark',
 }) => {
     // --- 本地配置状态 ---
     const [transition, setTransition] = useState(initialTransition);
@@ -295,16 +298,47 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
 
     const canMerge = clips.length >= 2 && !isMerging && !trackBuilding;
 
+    // 配色变量：深色保持原样，浅色整体翻转（面板内颜色统一走变量，避免逐处写分支）
+    const isDark = canvasTheme === 'dark';
+    const themeVars = (isDark
+        ? {
+            '--vm-surface': '#0d0d0d',
+            '--vm-input': '#171717',
+            '--vm-panel': 'rgba(23, 23, 23, .7)',
+            '--vm-hover': '#262626',
+            '--vm-border': '#262626',
+            '--vm-border-2': '#404040',
+            '--vm-text-strong': '#f5f5f5',
+            '--vm-text': '#e5e5e5',
+            '--vm-text-dim': '#a3a3a3',
+            '--vm-text-mute': '#737373',
+        }
+        : {
+            '--vm-surface': '#ffffff',
+            '--vm-input': '#f7f8fb',
+            '--vm-panel': '#f4f6fb',
+            '--vm-hover': '#eef0f6',
+            '--vm-border': '#e8eaf2',
+            '--vm-border-2': '#dfe3ec',
+            '--vm-text-strong': '#202637',
+            '--vm-text': '#2b3242',
+            '--vm-text-dim': '#6b7488',
+            '--vm-text-mute': '#8a93a5',
+        }) as React.CSSProperties;
+
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl bg-[#0d0d0d] border border-neutral-800 shadow-2xl overflow-hidden">
+        <div className={`fixed inset-0 z-[100] flex items-center justify-center backdrop-blur-sm ${isDark ? 'bg-black/70' : 'bg-[#0f172a]/25'}`}>
+            <div
+                className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-2xl border shadow-2xl overflow-hidden bg-[var(--vm-surface)] border-[var(--vm-border)]"
+                style={themeVars}
+            >
                 {/* ---------- Header ---------- */}
-                <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-800 shrink-0">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--vm-border)] shrink-0">
                     <div className="flex items-center gap-2.5">
                         <Layers size={20} className="text-purple-400" />
                         <div>
-                            <h2 className="text-base font-medium text-neutral-100">视频合并成片</h2>
-                            <p className="text-xs text-neutral-500 mt-0.5">
+                            <h2 className="text-base font-medium text-[var(--vm-text-strong)]">视频合并成片</h2>
+                            <p className="text-xs text-[var(--vm-text-mute)] mt-0.5">
                                 {clips.length} 个片段
                                 {episode ? ` · 第 ${episode} 集` : ''}
                                 {durationKnown && ` · 总长 ${formatDuration(
@@ -316,7 +350,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                     <button
                         onClick={onClose}
                         disabled={isMerging}
-                        className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 disabled:opacity-40 transition-colors"
+                        className="p-1.5 rounded-lg text-[var(--vm-text-dim)] hover:text-[var(--vm-text-strong)] hover:bg-[var(--vm-hover)] disabled:opacity-40 transition-colors"
                         title={isMerging ? '拼接中，请稍候' : '关闭'}
                     >
                         <X size={18} />
@@ -328,16 +362,16 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
 
                     {/* ===== 1. 片段列表 ===== */}
                     <section>
-                        <h3 className="text-xs font-medium text-neutral-400 mb-2 flex items-center gap-1.5">
+                        <h3 className="text-xs font-medium text-[var(--vm-text-dim)] mb-2 flex items-center gap-1.5">
                             <Film size={13} />
                             片段顺序
-                            <span className="text-neutral-600 font-normal">（从上到下依次拼接）</span>
+                            <span className="text-[var(--vm-text-mute)] font-normal">（从上到下依次拼接）</span>
                         </h3>
 
                         {clips.length === 0 ? (
-                            <div className="rounded-xl border border-dashed border-neutral-700 px-4 py-8 text-center">
-                                <p className="text-sm text-neutral-500">还没有连接任何视频片段</p>
-                                <p className="text-xs text-neutral-600 mt-1">
+                            <div className="rounded-xl border border-dashed border-[var(--vm-border-2)] px-4 py-8 text-center">
+                                <p className="text-sm text-[var(--vm-text-mute)]">还没有连接任何视频片段</p>
+                                <p className="text-xs text-[var(--vm-text-mute)] mt-1">
                                     把视频节点的输出连到本节点即可
                                 </p>
                             </div>
@@ -346,7 +380,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                 {clips.map((clip, index) => (
                                     <React.Fragment key={`${clip.nodeId}-${index}`}>
                                         <div
-                                            className="flex items-center gap-3 rounded-lg bg-neutral-900/70 border border-neutral-800 px-3 py-2"
+                                            className="flex items-center gap-3 rounded-lg bg-[var(--vm-panel)] border border-[var(--vm-border)] px-3 py-2"
                                         >
                                             {/* 序号 */}
                                             <span className="w-6 h-6 shrink-0 rounded-md bg-purple-500/15 text-purple-300 text-xs font-medium flex items-center justify-center">
@@ -363,10 +397,10 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
 
                                             {/* 信息 */}
                                             <div className="flex-1 min-w-0">
-                                                <p className="text-xs text-neutral-300 truncate">
+                                                <p className="text-xs text-[var(--vm-text)] truncate">
                                                     {clip.label || `片段 ${index + 1}`}
                                                 </p>
-                                                <p className="text-[11px] text-neutral-500 flex items-center gap-1 mt-0.5">
+                                                <p className="text-[11px] text-[var(--vm-text-mute)] flex items-center gap-1 mt-0.5">
                                                     <Clock size={10} />
                                                     {clip.duration > 0 ? formatDuration(clip.duration) : '时长未知'}
                                                     <span className="text-neutral-700">·</span>
@@ -385,7 +419,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                                 <button
                                                     onClick={() => onReorder(nodeId, index, index - 1)}
                                                     disabled={index === 0 || isMerging}
-                                                    className="p-1 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
+                                                    className="p-1 rounded text-[var(--vm-text-mute)] hover:text-[var(--vm-text)] hover:bg-[var(--vm-hover)] disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
                                                     title="上移"
                                                 >
                                                     <ArrowUp size={14} />
@@ -393,7 +427,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                                 <button
                                                     onClick={() => onReorder(nodeId, index, index + 1)}
                                                     disabled={index === clips.length - 1 || isMerging}
-                                                    className="p-1 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
+                                                    className="p-1 rounded text-[var(--vm-text-mute)] hover:text-[var(--vm-text)] hover:bg-[var(--vm-hover)] disabled:opacity-25 disabled:hover:bg-transparent transition-colors"
                                                     title="下移"
                                                 >
                                                     <ArrowDown size={14} />
@@ -404,14 +438,14 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                         {/* 片段之间的转场选择器（只在逐镜头模式下出现） */}
                                         {index < clips.length - 1 && isPerShot && (
                                             <div className="flex items-center gap-2 pl-11 pr-2">
-                                                <span className="text-[10px] text-neutral-600 shrink-0">
+                                                <span className="text-[10px] text-[var(--vm-text-mute)] shrink-0">
                                                     {index + 1}→{index + 2}
                                                 </span>
                                                 <select
                                                     value={getBoundaryTransition(index)}
                                                     onChange={(e) => setBoundaryTransition(index, e.target.value)}
                                                     disabled={isMerging}
-                                                    className="flex-1 rounded-md bg-neutral-900/60 border border-neutral-800 text-[11px] text-neutral-300 px-2 py-1 outline-none focus:border-purple-500/50 disabled:opacity-50"
+                                                    className="flex-1 rounded-md bg-[var(--vm-panel)] border border-[var(--vm-border)] text-[11px] text-[var(--vm-text)] px-2 py-1 outline-none focus:border-purple-500/50 disabled:opacity-50"
                                                 >
                                                     {presets.map((p) => (
                                                         <option key={p.id} value={p.id}>
@@ -429,7 +463,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
 
                     {/* ===== 2. 转场配置 ===== */}
                     <section>
-                        <h3 className="text-xs font-medium text-neutral-400 mb-2 flex items-center gap-1.5">
+                        <h3 className="text-xs font-medium text-[var(--vm-text-dim)] mb-2 flex items-center gap-1.5">
                             <Sparkles size={13} />
                             转场效果
                         </h3>
@@ -439,7 +473,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                             value={transition}
                             onChange={(e) => setTransition(e.target.value)}
                             disabled={isMerging}
-                            className="w-full rounded-lg bg-neutral-900 border border-neutral-800 text-sm text-neutral-200 px-3 py-2 outline-none focus:border-purple-500/60 disabled:opacity-50"
+                            className="w-full rounded-lg bg-[var(--vm-input)] border border-[var(--vm-border)] text-sm text-[var(--vm-text)] px-3 py-2 outline-none focus:border-purple-500/60 disabled:opacity-50"
                         >
                             {grouped.map(([group, items]) => (
                                 <optgroup key={group} label={group}>
@@ -456,7 +490,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                         {hasTransition && (
                             <div className="mt-3">
                                 <div className="flex items-center justify-between mb-1.5">
-                                    <span className="text-[11px] text-neutral-500">转场时长</span>
+                                    <span className="text-[11px] text-[var(--vm-text-mute)]">转场时长</span>
                                     <span className="text-[11px] text-purple-300 font-mono">
                                         {transitionDuration.toFixed(1)}s
                                     </span>
@@ -470,7 +504,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                             className={`flex-1 py-1.5 rounded-md text-[11px] transition-colors disabled:opacity-40 ${
                                                 Math.abs(transitionDuration - d) < 0.01
                                                     ? 'bg-purple-500/20 text-purple-200 border border-purple-500/40'
-                                                    : 'bg-neutral-900 text-neutral-400 border border-neutral-800 hover:border-neutral-700'
+                                                    : 'bg-[var(--vm-input)] text-[var(--vm-text-dim)] border border-[var(--vm-border)] hover:border-[var(--vm-border-2)]'
                                             }`}
                                         >
                                             {d}s
@@ -482,10 +516,10 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
 
                         {/* 逐镜头自定义开关 */}
                         {clips.length >= 2 && (
-                            <div className="mt-3 flex items-center justify-between rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2">
+                            <div className="mt-3 flex items-center justify-between rounded-lg bg-[var(--vm-panel)] border border-[var(--vm-border)] px-3 py-2">
                                 <div>
-                                    <p className="text-[11px] text-neutral-300">逐镜头自定义转场</p>
-                                    <p className="text-[10px] text-neutral-600 mt-0.5">
+                                    <p className="text-[11px] text-[var(--vm-text)]">逐镜头自定义转场</p>
+                                    <p className="text-[10px] text-[var(--vm-text-mute)] mt-0.5">
                                         {isPerShot
                                             ? '每个片段之间可单独选转场（已采用分镜建议）'
                                             : '所有片段之间统一使用上面的转场'}
@@ -499,7 +533,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                     className={`shrink-0 px-2.5 py-1 rounded-md text-[11px] border transition-colors disabled:opacity-40 ${
                                         isPerShot
                                             ? 'bg-purple-500/20 text-purple-200 border-purple-500/40'
-                                            : 'bg-neutral-800 text-neutral-400 border-neutral-700 hover:border-neutral-600'
+                                            : 'bg-[var(--vm-hover)] text-[var(--vm-text-dim)] border-[var(--vm-border-2)] hover:border-[var(--vm-border-2)]'
                                     }`}
                                 >
                                     {isPerShot ? '已开启' : '开启'}
@@ -508,14 +542,14 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                         )}
 
                         {/* 时长估算 */}
-                        <div className="mt-3 flex items-center justify-between rounded-lg bg-neutral-900/60 border border-neutral-800 px-3 py-2">
-                            <span className="text-[11px] text-neutral-500">预计成片时长</span>
-                            <span className="text-xs text-neutral-200 font-mono">
+                        <div className="mt-3 flex items-center justify-between rounded-lg bg-[var(--vm-panel)] border border-[var(--vm-border)] px-3 py-2">
+                            <span className="text-[11px] text-[var(--vm-text-mute)]">预计成片时长</span>
+                            <span className="text-xs text-[var(--vm-text)] font-mono">
                                 {durationKnown ? formatDuration(estimatedDuration) : '需生成后才能估算'}
                             </span>
                         </div>
                         {clips.length >= 2 && (
-                            <p className="text-[11px] text-neutral-600 mt-1.5">
+                            <p className="text-[11px] text-[var(--vm-text-mute)] mt-1.5">
                                 {isPerShot
                                     ? `共 ${boundaryTransitions?.filter((t) => t !== 'none').length ?? 0} 处转场，其余硬切`
                                     : hasTransition
@@ -527,7 +561,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
 
                     {/* ===== 3. 音轨配置 ===== */}
                     <section>
-                        <h3 className="text-xs font-medium text-neutral-400 mb-2 flex items-center gap-1.5">
+                        <h3 className="text-xs font-medium text-[var(--vm-text-dim)] mb-2 flex items-center gap-1.5">
                             <Music size={13} />
                             音轨
                         </h3>
@@ -545,12 +579,12 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                     className={`flex flex-col items-center gap-1 rounded-lg px-2 py-2.5 border transition-colors disabled:opacity-40 ${
                                         audioMode === opt.id
                                             ? 'bg-purple-500/15 border-purple-500/40 text-purple-200'
-                                            : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:border-neutral-700'
+                                            : 'bg-[var(--vm-input)] border-[var(--vm-border)] text-[var(--vm-text-dim)] hover:border-[var(--vm-border-2)]'
                                     }`}
                                 >
                                     {opt.icon}
                                     <span className="text-[11px] font-medium">{opt.label}</span>
-                                    <span className="text-[10px] text-neutral-600">{opt.hint}</span>
+                                    <span className="text-[10px] text-[var(--vm-text-mute)]">{opt.hint}</span>
                                 </button>
                             ))}
                         </div>
@@ -564,9 +598,9 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                     onChange={(e) => setAudioUrl(e.target.value)}
                                     disabled={isMerging || trackBuilding}
                                     placeholder="留空即按资产音色自动生成整集配音音轨"
-                                    className="w-full rounded-lg bg-neutral-900 border border-neutral-800 text-xs text-neutral-200 px-3 py-2 outline-none focus:border-purple-500/60 placeholder:text-neutral-600 disabled:opacity-50"
+                                    className="w-full rounded-lg bg-[var(--vm-input)] border border-[var(--vm-border)] text-xs text-[var(--vm-text)] px-3 py-2 outline-none focus:border-purple-500/60 placeholder:text-[var(--vm-text-mute)] disabled:opacity-50"
                                 />
-                                <p className="text-[11px] text-neutral-600 mt-1">
+                                <p className="text-[11px] text-[var(--vm-text-mute)] mt-1">
                                     留空时按「资产确认里每个角色的音色」逐条合成；资产换音色后会重新生成
                                 </p>
                                 {trackHint && (
@@ -580,7 +614,7 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                                         {trackHint}
                                     </p>
                                 )}
-                                <p className="text-[11px] text-neutral-600 mt-1">
+                                <p className="text-[11px] text-[var(--vm-text-mute)] mt-1">
                                     配音比视频短时会自动补静音，比视频长时按视频长度截断
                                 </p>
                             </div>
@@ -616,8 +650,8 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                 </div>
 
                 {/* ---------- Footer ---------- */}
-                <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-t border-neutral-800 shrink-0">
-                    <p className="text-[11px] text-neutral-600">
+                <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-t border-[var(--vm-border)] shrink-0">
+                    <p className="text-[11px] text-[var(--vm-text-mute)]">
                         {clips.length < 2
                             ? '至少连接 2 个视频片段'
                             : isMerging
@@ -628,14 +662,14 @@ export const VideoMergePanel: React.FC<VideoMergePanelProps> = ({
                         <button
                             onClick={onClose}
                             disabled={isMerging}
-                            className="px-3.5 py-2 rounded-lg text-xs text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 disabled:opacity-40 transition-colors"
+                            className="px-3.5 py-2 rounded-lg text-xs text-[var(--vm-text-dim)] hover:text-[var(--vm-text)] hover:bg-[var(--vm-hover)] disabled:opacity-40 transition-colors"
                         >
                             取消
                         </button>
                         <button
                             onClick={() => void handleConfirm()}
                             disabled={!canMerge}
-                            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-purple-600 text-white hover:bg-purple-500 disabled:bg-neutral-800 disabled:text-neutral-600 disabled:cursor-not-allowed transition-colors"
+                            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-purple-600 text-white hover:bg-purple-500 disabled:bg-[var(--vm-hover)] disabled:text-[var(--vm-text-mute)] disabled:cursor-not-allowed transition-colors"
                         >
                             {trackBuilding ? (
                                 <>

@@ -560,6 +560,42 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
     // Theme helper
     const isDark = canvasTheme === 'dark';
 
+    /**
+     * 控件配色变量：深色主题保持原有深灰配色，浅色主题整体翻转。
+     * 面板里的下拉菜单 / 次级按钮颜色统一走这些变量，避免逐处写 isDark 分支。
+     */
+    const themeVars = (isDark
+        ? {
+            '--nc-surface': '#1a1a1a',
+            '--nc-surface-2': '#1f1f1f',
+            '--nc-control': '#252525',
+            '--nc-control-hover': '#333333',
+            '--nc-border': '#404040',
+            '--nc-border-2': '#262626',
+            '--nc-text-strong': '#ffffff',
+            '--nc-text': '#d4d4d4',
+            '--nc-text-dim': '#a3a3a3',
+            '--nc-text-mute': '#737373',
+            '--nc-control-strong': '#171717',
+            '--nc-control-strong-2': '#262626',
+            '--nc-control-soft': 'rgba(38, 38, 38, .5)',
+        }
+        : {
+            '--nc-surface': '#ffffff',
+            '--nc-surface-2': '#f7f8fb',
+            '--nc-control': '#f4f5f9',
+            '--nc-control-hover': '#e8ebf3',
+            '--nc-border': '#e3e6ee',
+            '--nc-border-2': '#e8eaf2',
+            '--nc-text-strong': '#202637',
+            '--nc-text': '#3f4859',
+            '--nc-text-dim': '#6b7488',
+            '--nc-text-mute': '#8a93a5',
+            '--nc-control-strong': '#eef0f6',
+            '--nc-control-strong-2': '#f4f5f9',
+            '--nc-control-soft': '#f2f4f9',
+        }) as React.CSSProperties;
+
     // Handle angle mode generate - creates a new connected node
     const handleAngleGenerate = () => {
         if (onChangeAngleGenerate) {
@@ -594,11 +630,12 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
 
     return (
         <div
-            className={`p-4 rounded-2xl shadow-2xl cursor-default w-full transition-colors duration-300 ${isDark ? 'bg-[#1a1a1a] border border-neutral-800' : 'bg-white border border-neutral-200'}`}
+            className={`p-4 rounded-2xl shadow-2xl cursor-default w-full transition-colors duration-300 ${isDark ? 'bg-[var(--nc-surface)] border border-[var(--nc-border-2)]' : 'bg-white border border-neutral-200'}`}
             style={{
                 transform: `scale(${localScale})`,
                 transformOrigin: 'top center',
-                transition: 'transform 0.1s ease-out'
+                transition: 'transform 0.1s ease-out',
+                ...themeVars,
             }}
             onPointerDown={(e) => e.stopPropagation()} // Allow selecting text/interacting without dragging
             onClick={() => onSelect(data.id)} // Ensure clicking here selects the node
@@ -607,7 +644,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
             {!(data.prompt && data.prompt.startsWith('Extract panel #')) && (
                 <div className="mb-3">
                     <textarea
-                        className={`w-full bg-transparent text-sm outline-none resize-none font-light ${isDark ? 'text-white placeholder-neutral-600' : 'text-neutral-900 placeholder-neutral-400'}`}
+                        className={`w-full bg-transparent text-sm outline-none resize-none font-light ${isDark ? 'text-[var(--nc-text-strong)] placeholder-neutral-600' : 'text-neutral-900 placeholder-neutral-400'}`}
                         placeholder={
                             data.type === NodeType.VIDEO && isFrameToFrame && currentVideoModel.provider === 'kling'
                                 ? t('controls.promptOptional')
@@ -633,7 +670,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                     <div className="flex justify-end mt-1">
                         <button
                             onClick={() => onUpdate(data.id, { isPromptExpanded: !data.isPromptExpanded })}
-                            className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded transition-colors ${isDark ? 'text-neutral-500 hover:text-white hover:bg-neutral-700' : 'text-neutral-500 hover:text-neutral-900 hover:bg-neutral-200'}`}
+                            className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded transition-colors ${isDark ? 'text-[var(--nc-text-mute)] hover:text-[var(--nc-text-strong)] hover:bg-[var(--nc-control-hover)]' : 'text-[var(--nc-text-mute)] hover:text-neutral-900 hover:bg-neutral-200'}`}
                             title={data.isPromptExpanded ? t('controls.shrinkPrompt') : t('controls.expandPrompt')}
                         >
                             {data.isPromptExpanded ? <Shrink size={12} /> : <Expand size={12} />}
@@ -670,7 +707,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             <div className="relative" ref={modelDropdownRef}>
                                 <button
                                     onClick={() => setShowModelDropdown(!showModelDropdown)}
-                                    className="flex items-center gap-1.5 text-xs font-medium bg-[#252525] hover:bg-[#333] border border-neutral-700 text-white px-2.5 py-1.5 rounded-lg transition-colors"
+                                    className="flex items-center gap-1.5 text-xs font-medium bg-[var(--nc-control)] hover:bg-[var(--nc-control-hover)] border border-[var(--nc-border)] text-[var(--nc-text-strong)] px-2.5 py-1.5 rounded-lg transition-colors"
                                 >
                                     <HardDrive size={12} className="text-purple-400" />
                                     <span className="font-medium">{selectedLocalModel?.name || t('controls.selectModel')}</span>
@@ -679,17 +716,17 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
 
                                 {/* Local Model Dropdown Menu */}
                                 {showModelDropdown && (
-                                    <div className="absolute top-full mt-1 left-0 w-56 bg-[#252525] border border-neutral-700 rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100 max-h-64 overflow-y-auto">
+                                    <div className="absolute top-full mt-1 left-0 w-56 bg-[var(--nc-control)] border border-[var(--nc-border)] rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100 max-h-64 overflow-y-auto">
                                         {/* Header */}
-                                        <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider bg-[#1a1a1a] border-b border-neutral-700 flex items-center gap-1.5">
+                                        <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-dim)] uppercase tracking-wider bg-[var(--nc-surface)] border-b border-[var(--nc-border)] flex items-center gap-1.5">
                                             <HardDrive size={10} />
                                             Local Models
                                         </div>
 
                                         {isLoadingLocalModels ? (
-                                            <div className="px-3 py-4 text-xs text-neutral-500 text-center">{t('controls.loadingModels')}</div>
+                                            <div className="px-3 py-4 text-xs text-[var(--nc-text-mute)] text-center">{t('controls.loadingModels')}</div>
                                         ) : localModels.length === 0 ? (
-                                            <div className="px-3 py-4 text-xs text-neutral-500 text-center">
+                                            <div className="px-3 py-4 text-xs text-[var(--nc-text-mute)] text-center">
                                                 <p>{t('controls.noModels')}</p>
                                                 <p className="text-[10px] mt-1">{t('controls.addModels')}</p>
                                             </div>
@@ -698,7 +735,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                 <button
                                                     key={model.id}
                                                     onClick={() => handleLocalModelChange(model)}
-                                                    className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${data.localModelId === model.id ? 'text-purple-400' : 'text-neutral-300'}`}
+                                                    className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${data.localModelId === model.id ? 'text-purple-400' : 'text-[var(--nc-text)]'}`}
                                                 >
                                                     <span className="flex flex-col items-start gap-0.5">
                                                         <span className="flex items-center gap-2">
@@ -708,7 +745,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                                 <span className="text-[9px] px-1 py-0.5 bg-purple-600/30 text-purple-400 rounded">{model.architecture.toUpperCase()}</span>
                                                             )}
                                                         </span>
-                                                        <span className="text-[10px] text-neutral-500 ml-5">{model.sizeFormatted}</span>
+                                                        <span className="text-[10px] text-[var(--nc-text-mute)] ml-5">{model.sizeFormatted}</span>
                                                     </span>
                                                     {data.localModelId === model.id && <Check size={12} />}
                                                 </button>
@@ -721,10 +758,10 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             <div className="relative" ref={modelDropdownRef}>
                                 <button
                                     onClick={() => setShowModelDropdown(!showModelDropdown)}
-                                    className="flex items-center gap-1.5 text-xs font-medium bg-[#252525] hover:bg-[#333] border border-neutral-700 text-white px-2.5 py-1.5 rounded-lg transition-colors"
+                                    className="flex items-center gap-1.5 text-xs font-medium bg-[var(--nc-control)] hover:bg-[var(--nc-control-hover)] border border-[var(--nc-border)] text-[var(--nc-text-strong)] px-2.5 py-1.5 rounded-lg transition-colors"
                                 >
                                     {currentVideoModel.id === 'veo-3.1' ? (
-                                        <GoogleIcon size={12} className="text-white" />
+                                        <GoogleIcon size={12} className="text-[var(--nc-text-strong)]" />
                                     ) : currentVideoModel.provider === 'kling' ? (
                                         <KlingIcon size={14} />
                                     ) : currentVideoModel.provider === 'doubao' ? (
@@ -738,9 +775,9 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
 
                                 {/* Model Dropdown Menu */}
                                 {showModelDropdown && (
-                                    <div className="absolute top-full mt-1 left-0 w-52 bg-[#252525] border border-neutral-700 rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
+                                    <div className="absolute top-full mt-1 left-0 w-52 bg-[var(--nc-control)] border border-[var(--nc-border)] rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
                                         {/* Mode indicator */}
-                                        <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider bg-[#1a1a1a] border-b border-neutral-700 flex items-center gap-1.5">
+                                        <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-dim)] uppercase tracking-wider bg-[var(--nc-surface)] border-b border-[var(--nc-border)] flex items-center gap-1.5">
                                             <span className={`w-1.5 h-1.5 rounded-full ${videoGenerationMode === 'text-to-video' ? 'bg-blue-400' :
                                                 videoGenerationMode === 'image-to-video' ? 'bg-green-400' :
                                                     videoGenerationMode === 'motion-control' ? 'bg-orange-400' : 'bg-purple-400'
@@ -754,19 +791,19 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         {/* Google Models */}
                                         {availableVideoModels.filter(m => m.provider === 'google').length > 0 && (
                                             <>
-                                                <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f]">
+                                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)]">
                                                     Google
                                                 </div>
                                                 {availableVideoModels.filter(m => m.provider === 'google').map(model => (
                                                     <button
                                                         key={model.id}
                                                         onClick={() => handleVideoModelChange(model.id)}
-                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentVideoModel.id === model.id ? 'text-blue-400' : 'text-neutral-300'
+                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentVideoModel.id === model.id ? 'text-blue-400' : 'text-[var(--nc-text)]'
                                                             }`}
                                                     >
                                                         <span className="flex items-center gap-2">
                                                             {model.id === 'veo-3.1' ? (
-                                                                <GoogleIcon size={12} className="text-white" />
+                                                                <GoogleIcon size={12} className="text-[var(--nc-text-strong)]" />
                                                             ) : (
                                                                 <Film size={12} className="text-cyan-400" />
                                                             )}
@@ -781,14 +818,14 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         {/* Kling Models */}
                                         {availableVideoModels.filter(m => m.provider === 'kling').length > 0 && (
                                             <>
-                                                <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f] border-t border-neutral-700">
+                                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)] border-t border-[var(--nc-border)]">
                                                     Kling AI
                                                 </div>
                                                 {availableVideoModels.filter(m => m.provider === 'kling').map(model => (
                                                     <button
                                                         key={model.id}
                                                         onClick={() => handleVideoModelChange(model.id)}
-                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentVideoModel.id === model.id ? 'text-blue-400' : 'text-neutral-300'
+                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentVideoModel.id === model.id ? 'text-blue-400' : 'text-[var(--nc-text)]'
                                                             }`}
                                                     >
                                                         <span className="flex items-center gap-2">
@@ -804,14 +841,14 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         {/* Hailuo Models */}
                                         {availableVideoModels.filter(m => m.provider === 'hailuo').length > 0 && (
                                             <>
-                                                <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f] border-t border-neutral-700">
+                                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)] border-t border-[var(--nc-border)]">
                                                     Hailuo AI
                                                 </div>
                                                 {availableVideoModels.filter(m => m.provider === 'hailuo').map(model => (
                                                     <button
                                                         key={model.id}
                                                         onClick={() => handleVideoModelChange(model.id)}
-                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentVideoModel.id === model.id ? 'text-blue-400' : 'text-neutral-300'
+                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentVideoModel.id === model.id ? 'text-blue-400' : 'text-[var(--nc-text)]'
                                                             }`}
                                                     >
                                                         <span className="flex items-center gap-2">
@@ -825,14 +862,14 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         )}
                                         {availableVideoModels.filter(m => m.provider === 'doubao').length > 0 && (
                                             <>
-                                                <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f] border-t border-neutral-700">
+                                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)] border-t border-[var(--nc-border)]">
                                                     豆包 Seedance
                                                 </div>
                                                 {availableVideoModels.filter(m => m.provider === 'doubao').map(model => (
                                                     <button
                                                         key={model.id}
                                                         onClick={() => handleVideoModelChange(model.id)}
-                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentVideoModel.id === model.id ? 'text-blue-400' : 'text-neutral-300'}`}
+                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentVideoModel.id === model.id ? 'text-blue-400' : 'text-[var(--nc-text)]'}`}
                                                     >
                                                         <span className="flex items-center gap-2">
                                                             <Sparkles size={14} className="text-purple-400" />
@@ -850,10 +887,10 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             <div className="relative" ref={modelDropdownRef}>
                                 <button
                                     onClick={() => setShowModelDropdown(!showModelDropdown)}
-                                    className="flex items-center gap-1.5 text-xs font-medium bg-[#252525] hover:bg-[#333] border border-neutral-700 text-white px-2.5 py-1.5 rounded-lg transition-colors"
+                                    className="flex items-center gap-1.5 text-xs font-medium bg-[var(--nc-control)] hover:bg-[var(--nc-control-hover)] border border-[var(--nc-border)] text-[var(--nc-text-strong)] px-2.5 py-1.5 rounded-lg transition-colors"
                                 >
                                     {currentImageModel.id === 'google-veo' ? ( // Keeping consistency if there was one, but mainly checking provider
-                                        <GoogleIcon size={12} className="text-white" />
+                                        <GoogleIcon size={12} className="text-[var(--nc-text-strong)]" />
                                     ) : currentImageModel.id === 'gemini-pro' ? (
                                         <Banana size={12} className="text-yellow-400" />
                                     ) : currentImageModel.provider === 'openai' ? (
@@ -869,9 +906,9 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
 
                                 {/* Image Model Dropdown Menu */}
                                 {showModelDropdown && (
-                                    <div className="absolute top-full mt-1 left-0 w-48 bg-[#252525] border border-neutral-700 rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
+                                    <div className="absolute top-full mt-1 left-0 w-48 bg-[var(--nc-control)] border border-[var(--nc-border)] rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
                                         {/* Mode indicator */}
-                                        <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider bg-[#1a1a1a] border-b border-neutral-700 flex items-center gap-1.5">
+                                        <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-dim)] uppercase tracking-wider bg-[var(--nc-surface)] border-b border-[var(--nc-border)] flex items-center gap-1.5">
                                             <span className={`w-1.5 h-1.5 rounded-full ${imageGenerationMode === 'text-to-image' ? 'bg-blue-400' :
                                                 imageGenerationMode === 'image-to-image' ? 'bg-green-400' : 'bg-purple-400'
                                                 }`} />
@@ -882,14 +919,14 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         {/* OpenAI Models */}
                                         {availableImageModels.filter(m => m.provider === 'openai').length > 0 && (
                                             <>
-                                                <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f]">
+                                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)]">
                                                     OpenAI
                                                 </div>
                                                 {availableImageModels.filter(m => m.provider === 'openai').map(model => (
                                                     <button
                                                         key={model.id}
                                                         onClick={() => handleImageModelChange(model.id)}
-                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentImageModel.id === model.id ? 'text-blue-400' : 'text-neutral-300'
+                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentImageModel.id === model.id ? 'text-blue-400' : 'text-[var(--nc-text)]'
                                                             }`}
                                                     >
                                                         <span className="flex items-center gap-2">
@@ -904,21 +941,21 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         {/* Google Models */}
                                         {availableImageModels.filter(m => m.provider === 'google').length > 0 && (
                                             <>
-                                                <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f] border-t border-neutral-700">
+                                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)] border-t border-[var(--nc-border)]">
                                                     Google
                                                 </div>
                                                 {availableImageModels.filter(m => m.provider === 'google').map(model => (
                                                     <button
                                                         key={model.id}
                                                         onClick={() => handleImageModelChange(model.id)}
-                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentImageModel.id === model.id ? 'text-blue-400' : 'text-neutral-300'
+                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentImageModel.id === model.id ? 'text-blue-400' : 'text-[var(--nc-text)]'
                                                             }`}
                                                     >
                                                         <span className="flex items-center gap-2">
                                                             {model.id === 'gemini-pro' ? (
                                                                 <Banana size={12} className="text-yellow-400" />
                                                             ) : (
-                                                                <GoogleIcon size={12} className="text-white" />
+                                                                <GoogleIcon size={12} className="text-[var(--nc-text-strong)]" />
                                                             )}
                                                             {model.name}
                                                         </span>
@@ -931,14 +968,14 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         {/* Kling Models */}
                                         {availableImageModels.filter(m => m.provider === 'kling').length > 0 && (
                                             <>
-                                                <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f] border-t border-neutral-700">
+                                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)] border-t border-[var(--nc-border)]">
                                                     Kling AI
                                                 </div>
                                                 {availableImageModels.filter(m => m.provider === 'kling').map(model => (
                                                     <button
                                                         key={model.id}
                                                         onClick={() => handleImageModelChange(model.id)}
-                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentImageModel.id === model.id ? 'text-blue-400' : 'text-neutral-300'
+                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentImageModel.id === model.id ? 'text-blue-400' : 'text-[var(--nc-text)]'
                                                             }`}
                                                     >
                                                         <span className="flex items-center gap-2">
@@ -952,14 +989,14 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         )}
                                         {availableImageModels.filter(m => m.provider === 'doubao').length > 0 && (
                                             <>
-                                                <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f] border-t border-neutral-700">
+                                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)] border-t border-[var(--nc-border)]">
                                                     豆包 Seedream
                                                 </div>
                                                 {availableImageModels.filter(m => m.provider === 'doubao').map(model => (
                                                     <button
                                                         key={model.id}
                                                         onClick={() => handleImageModelChange(model.id)}
-                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentImageModel.id === model.id ? 'text-blue-400' : 'text-neutral-300'}`}
+                                                        className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentImageModel.id === model.id ? 'text-blue-400' : 'text-[var(--nc-text)]'}`}
                                                     >
                                                         <span className="flex items-center gap-2">
                                                             <Sparkles size={14} className="text-purple-400" />
@@ -982,7 +1019,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             <div className="relative" ref={dropdownRef}>
                                 <button
                                     onClick={() => setShowSizeDropdown(!showSizeDropdown)}
-                                    className="flex items-center gap-1.5 text-xs font-medium bg-[#252525] hover:bg-[#333] border border-neutral-700 text-white px-2.5 py-1.5 rounded-lg transition-colors"
+                                    className="flex items-center gap-1.5 text-xs font-medium bg-[var(--nc-control)] hover:bg-[var(--nc-control-hover)] border border-[var(--nc-border)] text-[var(--nc-text-strong)] px-2.5 py-1.5 rounded-lg transition-colors"
                                 >
                                     {isVideoNode && <Monitor size={12} className="text-green-400" />}
                                     {!isVideoNode && <Crop size={12} className="text-blue-400" />}
@@ -992,17 +1029,17 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                 {/* Dropdown Menu */}
                                 {showSizeDropdown && (
                                     <div
-                                        className="absolute bottom-full mb-2 right-0 w-32 bg-[#252525] border border-neutral-700 rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100 flex flex-col max-h-60 overflow-y-auto"
+                                        className="absolute bottom-full mb-2 right-0 w-32 bg-[var(--nc-control)] border border-[var(--nc-border)] rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100 flex flex-col max-h-60 overflow-y-auto"
                                         onWheel={(e) => e.stopPropagation()}
                                     >
-                                        <div className="px-3 py-2 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f]">
+                                        <div className="px-3 py-2 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)]">
                                             {isVideoNode ? t('controls.resolution') : t('controls.aspectRatio')}
                                         </div>
                                         {sizeOptions.map(option => (
                                             <button
                                                 key={option}
                                                 onClick={() => handleSizeSelect(option)}
-                                                className={`flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentSizeLabel === option ? 'text-blue-400' : 'text-neutral-300'
+                                                className={`flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentSizeLabel === option ? 'text-blue-400' : 'text-[var(--nc-text)]'
                                                     }`}
                                             >
                                                 <span>{option}</span>
@@ -1019,7 +1056,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             <div className="relative" ref={resolutionDropdownRef}>
                                 <button
                                     onClick={() => setShowResolutionDropdown(!showResolutionDropdown)}
-                                    className="flex items-center gap-1.5 text-xs font-medium bg-[#252525] hover:bg-[#333] border border-neutral-700 text-white px-2.5 py-1.5 rounded-lg transition-colors"
+                                    className="flex items-center gap-1.5 text-xs font-medium bg-[var(--nc-control)] hover:bg-[var(--nc-control-hover)] border border-[var(--nc-border)] text-[var(--nc-text-strong)] px-2.5 py-1.5 rounded-lg transition-colors"
                                 >
                                     <Monitor size={12} className="text-green-400" />
                                     {data.resolution || 'Auto'}
@@ -1028,17 +1065,17 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                 {/* Dropdown Menu */}
                                 {showResolutionDropdown && (
                                     <div
-                                        className="absolute bottom-full mb-2 right-0 w-24 bg-[#252525] border border-neutral-700 rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100"
+                                        className="absolute bottom-full mb-2 right-0 w-24 bg-[var(--nc-control)] border border-[var(--nc-border)] rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100"
                                         onWheel={(e) => e.stopPropagation()}
                                     >
-                                        <div className="px-3 py-2 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f]">
+                                        <div className="px-3 py-2 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)]">
                                             Quality
                                         </div>
                                         {(currentImageModel as any).resolutions.map((res: string) => (
                                             <button
                                                 key={res}
                                                 onClick={() => handleResolutionSelect(res)}
-                                                className={`flex items-center justify-between w-full px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${(data.resolution || 'Auto') === res ? 'text-blue-400' : 'text-neutral-300'}`}
+                                                className={`flex items-center justify-between w-full px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${(data.resolution || 'Auto') === res ? 'text-blue-400' : 'text-[var(--nc-text)]'}`}
                                             >
                                                 <span>{res}</span>
                                                 {(data.resolution || 'Auto') === res && <Check size={12} />}
@@ -1054,7 +1091,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             <div className="relative" ref={aspectRatioDropdownRef}>
                                 <button
                                     onClick={() => setShowAspectRatioDropdown(!showAspectRatioDropdown)}
-                                    className="flex items-center gap-1.5 text-xs font-medium bg-[#252525] hover:bg-[#333] border border-neutral-700 text-white px-2.5 py-1.5 rounded-lg transition-colors"
+                                    className="flex items-center gap-1.5 text-xs font-medium bg-[var(--nc-control)] hover:bg-[var(--nc-control-hover)] border border-[var(--nc-border)] text-[var(--nc-text-strong)] px-2.5 py-1.5 rounded-lg transition-colors"
                                 >
                                     <Film size={12} className="text-purple-400" />
                                     {data.aspectRatio || '16:9'}
@@ -1062,15 +1099,15 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
 
                                 {/* Aspect Ratio Dropdown Menu */}
                                 {showAspectRatioDropdown && (
-                                    <div className="absolute bottom-full mb-2 right-0 w-28 bg-[#252525] border border-neutral-700 rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
-                                        <div className="px-3 py-2 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f]">
+                                    <div className="absolute bottom-full mb-2 right-0 w-28 bg-[var(--nc-control)] border border-[var(--nc-border)] rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
+                                        <div className="px-3 py-2 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)]">
                                             Size
                                         </div>
                                         {(currentVideoModel?.aspectRatios || VIDEO_ASPECT_RATIOS).map((option: string) => (
                                             <button
                                                 key={option}
                                                 onClick={() => handleAspectRatioSelect(option)}
-                                                className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${data.aspectRatio === option ? 'text-blue-400' : 'text-neutral-300'}`}
+                                                className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${data.aspectRatio === option ? 'text-blue-400' : 'text-[var(--nc-text)]'}`}
                                             >
                                                 <span>{option}</span>
                                                 {data.aspectRatio === option && <Check size={12} />}
@@ -1086,7 +1123,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             <div className="relative" ref={durationDropdownRef}>
                                 <button
                                     onClick={() => setShowDurationDropdown(!showDurationDropdown)}
-                                    className="flex items-center gap-1.5 text-xs font-medium bg-[#252525] hover:bg-[#333] border border-neutral-700 text-white px-2.5 py-1.5 rounded-lg transition-colors"
+                                    className="flex items-center gap-1.5 text-xs font-medium bg-[var(--nc-control)] hover:bg-[var(--nc-control-hover)] border border-[var(--nc-border)] text-[var(--nc-text-strong)] px-2.5 py-1.5 rounded-lg transition-colors"
                                 >
                                     <Clock size={12} className="text-cyan-400" />
                                     {currentDuration}s
@@ -1094,15 +1131,15 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
 
                                 {/* Duration Dropdown Menu */}
                                 {showDurationDropdown && (
-                                    <div className="absolute bottom-full mb-2 right-0 w-24 bg-[#252525] border border-neutral-700 rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
-                                        <div className="px-3 py-2 text-[10px] font-bold text-neutral-500 uppercase tracking-wider bg-[#1f1f1f]">
+                                    <div className="absolute bottom-full mb-2 right-0 w-24 bg-[var(--nc-control)] border border-[var(--nc-border)] rounded-lg shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-100">
+                                        <div className="px-3 py-2 text-[10px] font-bold text-[var(--nc-text-mute)] uppercase tracking-wider bg-[var(--nc-surface-2)]">
                                             {t('controls.duration')}
                                         </div>
                                         {availableDurations.map((dur: number) => (
                                             <button
                                                 key={dur}
                                                 onClick={() => handleDurationChange(dur)}
-                                                className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[#333] transition-colors ${currentDuration === dur ? 'text-blue-400' : 'text-neutral-300'}`}
+                                                className={`w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-[var(--nc-control-hover)] transition-colors ${currentDuration === dur ? 'text-blue-400' : 'text-[var(--nc-text)]'}`}
                                             >
                                                 <span>{dur}s</span>
                                                 {currentDuration === dur && <Check size={12} />}
@@ -1136,7 +1173,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                         ? 'bg-neutral-700/50 cursor-not-allowed opacity-50'
                                         : isDark
                                             ? 'bg-white text-neutral-900 hover:bg-neutral-100 active:scale-95'
-                                            : 'bg-neutral-900 text-white hover:bg-neutral-800 active:scale-95'
+                                            : 'bg-[var(--nc-control-strong)] text-[var(--nc-text-strong)] hover:bg-[var(--nc-control-strong-2)] active:scale-95'
                                         }`}
                                     title={isFaceModeBlocked ? t('controls.noFaceDetected') : t('controls.generate')}
                                 >
@@ -1156,16 +1193,16 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
 
             {/* Kling V1.5 Reference Settings - For Image nodes with connected input */}
             {!isVideoNode && data.imageModel === 'kling-v1-5' && connectedImageNodes.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-neutral-800">
-                    <div className="text-[10px] text-neutral-500 uppercase tracking-wider mb-2">{t('controls.referenceSettings')}</div>
+                <div className="mt-3 pt-3 border-t border-[var(--nc-border-2)]">
+                    <div className="text-[10px] text-[var(--nc-text-mute)] uppercase tracking-wider mb-2">{t('controls.referenceSettings')}</div>
 
                     {/* Mode Tabs */}
-                    <div className="flex gap-1 mb-3 p-1 bg-neutral-800/50 rounded-lg">
+                    <div className="flex gap-1 mb-3 p-1 bg-[var(--nc-control-soft)] rounded-lg">
                         <button
                             onClick={() => onUpdate(data.id, { klingReferenceMode: 'subject', detectedFaces: undefined, faceDetectionStatus: undefined })}
                             className={`flex-1 px-3 py-1.5 text-xs rounded-md transition-colors ${(data.klingReferenceMode || 'subject') === 'subject'
-                                ? 'bg-neutral-700 text-white font-medium'
-                                : 'text-neutral-400 hover:text-white hover:bg-neutral-700/50'
+                                ? 'bg-neutral-700 text-[var(--nc-text-strong)] font-medium'
+                                : 'text-[var(--nc-text-dim)] hover:text-[var(--nc-text-strong)] hover:bg-[var(--nc-control-hover)]'
                                 }`}
                         >
                             Subject
@@ -1176,8 +1213,8 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                 onUpdate(data.id, { klingReferenceMode: 'face', faceDetectionStatus: 'loading', detectedFaces: undefined });
                             }}
                             className={`flex-1 px-3 py-1.5 text-xs rounded-md transition-colors ${data.klingReferenceMode === 'face'
-                                ? 'bg-neutral-700 text-white font-medium'
-                                : 'text-neutral-400 hover:text-white hover:bg-neutral-700/50'
+                                ? 'bg-neutral-700 text-[var(--nc-text-strong)] font-medium'
+                                : 'text-[var(--nc-text-dim)] hover:text-[var(--nc-text-strong)] hover:bg-[var(--nc-control-hover)]'
                                 }`}
                         >
                             Face
@@ -1221,7 +1258,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                     {/* Loading indicator */}
                                     {data.klingReferenceMode === 'face' && data.faceDetectionStatus === 'loading' && (
                                         <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                                            <div className="text-xs text-white">{t('controls.detectingFaces')}</div>
+                                            <div className="text-xs text-[var(--nc-text-strong)]">{t('controls.detectingFaces')}</div>
                                         </div>
                                     )}
                                 </div>
@@ -1263,8 +1300,8 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                         <>
                             <div className="space-y-1 mb-3">
                                 <div className="flex justify-between text-[10px]">
-                                    <span className="text-neutral-400">{t('controls.faceReference')}</span>
-                                    <span className="text-white font-medium">{data.klingFaceIntensity ?? 65}</span>
+                                    <span className="text-[var(--nc-text-dim)]">{t('controls.faceReference')}</span>
+                                    <span className="text-[var(--nc-text-strong)] font-medium">{data.klingFaceIntensity ?? 65}</span>
                                 </div>
                                 <input
                                     type="range"
@@ -1277,8 +1314,8 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             </div>
                             <div className="space-y-1">
                                 <div className="flex justify-between text-[10px]">
-                                    <span className="text-neutral-400">{t('controls.subjectReference')}</span>
-                                    <span className="text-white font-medium">{data.klingSubjectIntensity ?? 50}</span>
+                                    <span className="text-[var(--nc-text-dim)]">{t('controls.subjectReference')}</span>
+                                    <span className="text-[var(--nc-text-strong)] font-medium">{data.klingSubjectIntensity ?? 50}</span>
                                 </div>
                                 <input
                                     type="range"
@@ -1296,8 +1333,8 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                     {data.klingReferenceMode === 'face' && data.faceDetectionStatus === 'success' && (
                         <div className="space-y-1">
                             <div className="flex justify-between text-[10px]">
-                                <span className="text-neutral-400">{t('controls.referenceStrength')}</span>
-                                <span className="text-white font-medium">{data.klingFaceIntensity ?? 42}</span>
+                                <span className="text-[var(--nc-text-dim)]">{t('controls.referenceStrength')}</span>
+                                <span className="text-[var(--nc-text-strong)] font-medium">{data.klingFaceIntensity ?? 42}</span>
                             </div>
                             <input
                                 type="range"
@@ -1315,12 +1352,12 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
             {/* Advanced Settings Drawer - Only for Video nodes */}
             {
                 isVideoNode && (
-                    <div className="mt-2 pt-2 border-t border-neutral-800">
+                    <div className="mt-2 pt-2 border-t border-[var(--nc-border-2)]">
                         <button
                             onClick={() => setShowAdvanced(!showAdvanced)}
                             className="w-full flex items-center justify-center gap-1 cursor-pointer"
                         >
-                            <span className="text-[10px] text-neutral-600 uppercase tracking-widest hover:text-neutral-400">
+                            <span className="text-[10px] text-neutral-600 uppercase tracking-widest hover:text-[var(--nc-text-dim)]">
                                 Advanced Settings
                             </span>
                             {showAdvanced ? (
@@ -1335,11 +1372,11 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                             <div className="mt-3 space-y-3">
                                 {/* Audio Toggle - Only for Kling 2.6 (Veo 3.1 SDK doesn't support generateAudio yet) */}
                                 {data.videoModel === 'kling-v2-6' && (
-                                    <div className="inline-flex items-center gap-2 px-2.5 py-1.5 bg-neutral-800/50 rounded-lg w-fit">
+                                    <div className="inline-flex items-center gap-2 px-2.5 py-1.5 bg-[var(--nc-control-soft)] rounded-lg w-fit">
                                         <svg className="w-3.5 h-3.5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                             <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                                         </svg>
-                                        <span className="text-[11px] text-neutral-300">{t('controls.audio')}</span>
+                                        <span className="text-[11px] text-[var(--nc-text)]">{t('controls.audio')}</span>
                                         <button
                                             onClick={() => onUpdate(data.id, { generateAudio: !(data.generateAudio !== false) })}
                                             className={`relative w-8 h-4 rounded-full transition-colors ${data.generateAudio !== false ? 'bg-cyan-600' : 'bg-neutral-700'}`}
@@ -1355,10 +1392,10 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                 {(connectedImageNodes.length > 0 || isReferenceMode || !!data.videoInputMode) &&
                                     videoGenerationMode !== 'motion-control' && (
                                     <div className="space-y-1.5">
-                                        <label className="text-[10px] text-neutral-500 uppercase tracking-wider">
+                                        <label className="text-[10px] text-[var(--nc-text-mute)] uppercase tracking-wider">
                                             {t('controls.inputMode')}
                                         </label>
-                                        <div className="flex gap-1 p-1 bg-neutral-800/60 rounded-lg">
+                                        <div className="flex gap-1 p-1 bg-[var(--nc-control-soft)] rounded-lg">
                                             {([
                                                 { key: 'first-frame', label: t('controls.inputModeFirstFrame') },
                                                 { key: 'frame-to-frame', label: t('controls.inputModeFrameToFrame') },
@@ -1374,10 +1411,10 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                         title={disabled ? t('controls.referenceUnsupported') : undefined}
                                                         onClick={() => { if (!disabled) handleInputModeChange(opt.key); }}
                                                         className={`flex-1 px-2 py-1 text-[10px] rounded-md transition-colors ${active
-                                                            ? 'bg-neutral-700 text-white'
+                                                            ? 'bg-neutral-700 text-[var(--nc-text-strong)]'
                                                             : disabled
                                                                 ? 'text-neutral-600 cursor-not-allowed'
-                                                                : 'text-neutral-400 hover:text-neutral-200'
+                                                                : 'text-[var(--nc-text-dim)] hover:text-neutral-200'
                                                             }`}
                                                     >
                                                         {opt.label}
@@ -1385,7 +1422,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                 );
                                             })}
                                         </div>
-                                        <div className="text-[10px] leading-relaxed text-neutral-500">
+                                        <div className="text-[10px] leading-relaxed text-[var(--nc-text-mute)]">
                                             {inputModeUI === 'first-frame' && t('controls.inputModeFirstFrameHint')}
                                             {inputModeUI === 'frame-to-frame' && t('controls.inputModeFrameToFrameHint')}
                                             {inputModeUI === 'reference' && t('controls.inputModeReferenceHint', { total: connectedImageNodes.length, max: maxReferenceImages })}
@@ -1396,7 +1433,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                 {/* 已连接的图片：多图参考展示全部，首尾帧只展示前 2 张 */}
                                 {connectedImageNodes.length > 0 && (
                                     <div className="space-y-2">
-                                        <label className="text-[10px] text-neutral-500 uppercase tracking-wider">
+                                        <label className="text-[10px] text-[var(--nc-text-mute)] uppercase tracking-wider">
                                             {videoGenerationMode === 'motion-control'
                                                 ? 'Input References'
                                                 : isReferenceMode
@@ -1411,7 +1448,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                 {frameInputsWithUrls.map((input) => (
                                                     <div
                                                         key={input.nodeId}
-                                                        className="flex-1 flex flex-col items-center gap-2 p-2 bg-neutral-800 rounded-lg border border-neutral-700/50"
+                                                        className="flex-1 flex flex-col items-center gap-2 p-2 bg-[var(--nc-control-strong-2)] rounded-lg border border-[var(--nc-border)]"
                                                     >
                                                         <div className="relative w-full aspect-video overflow-hidden rounded bg-black flex items-center justify-center">
                                                             {input.url ? (
@@ -1426,8 +1463,8 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                             <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
                                                             <div className="absolute bottom-1 left-1 right-1">
                                                                 <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded block text-center truncate ${input.type === NodeType.VIDEO
-                                                                    ? 'bg-purple-600/80 text-white'
-                                                                    : 'bg-blue-600/80 text-white'
+                                                                    ? 'bg-purple-600/80 text-[var(--nc-text-strong)]'
+                                                                    : 'bg-blue-600/80 text-[var(--nc-text-strong)]'
                                                                     }`}>
                                                                     {input.type === NodeType.VIDEO ? 'MOTION REF' : 'CHARACTER REF'}
                                                                 </span>
@@ -1442,7 +1479,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                 {referenceInputs.map((input) => (
                                                     <div
                                                         key={input.nodeId}
-                                                        className="relative aspect-square overflow-hidden rounded-lg bg-neutral-800 border border-neutral-700/50"
+                                                        className="relative aspect-square overflow-hidden rounded-lg bg-[var(--nc-control-strong-2)] border border-[var(--nc-border)]"
                                                     >
                                                         {input.url ? (
                                                             <img
@@ -1455,11 +1492,11 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                                 {t('controls.noPreview')}
                                                             </div>
                                                         )}
-                                                        <span className="absolute top-1 left-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-600/80 text-white">
+                                                        <span className="absolute top-1 left-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-600/80 text-[var(--nc-text-strong)]">
                                                             REF {input.index + 1}
                                                         </span>
                                                         {input.type === NodeType.VIDEO && (
-                                                            <span className="absolute bottom-1 right-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-600/80 text-white">
+                                                            <span className="absolute bottom-1 right-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-600/80 text-[var(--nc-text-strong)]">
                                                                 FRAME
                                                             </span>
                                                         )}
@@ -1486,7 +1523,7 @@ const NodeControlsComponent: React.FC<NodeControlsProps> = ({
                                                             }
                                                         }}
                                                         onDragEnd={() => setDraggedIndex(null)}
-                                                        className={`flex items-center gap-2 p-2 bg-neutral-800 rounded-lg cursor-grab active:cursor-grabbing transition-all ${draggedIndex === index ? 'opacity-50 scale-95' : ''
+                                                        className={`flex items-center gap-2 p-2 bg-[var(--nc-control-strong-2)] rounded-lg cursor-grab active:cursor-grabbing transition-all ${draggedIndex === index ? 'opacity-50 scale-95' : ''
                                                             }`}
                                                     >
                                                         <GripVertical size={14} className="text-neutral-600" />

@@ -30,6 +30,8 @@ interface NodeContentProps {
     onImageToImage?: (nodeId: string) => void;
     onImageToVideo?: (nodeId: string) => void;
     onUpdate?: (nodeId: string, updates: Partial<NodeData>) => void;
+    /** 画布主题：light 时节点内容区改为浅色 */
+    canvasTheme?: 'dark' | 'light';
 }
 
 export const NodeContent: React.FC<NodeContentProps> = ({
@@ -49,10 +51,12 @@ export const NodeContent: React.FC<NodeContentProps> = ({
     onTextToImage,
     onImageToImage,
     onImageToVideo,
-    onUpdate
+    onUpdate,
+    canvasTheme = 'dark'
 }) => {
     const { t } = useTranslation();
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const isDark = canvasTheme === 'dark';
 
     // Local state for text node textarea to prevent lag
     const [localPrompt, setLocalPrompt] = useState(data.prompt || '');
@@ -142,7 +146,7 @@ export const NodeContent: React.FC<NodeContentProps> = ({
                 </div>
             ) : data.type === NodeType.TEXT ? (
                 /* Text Node - Menu or Editing Mode */
-                <div className={`relative w-full bg-[#1a1a1a] rounded-2xl overflow-hidden ${selected ? 'ring-1 ring-blue-500/30' : ''}`}>
+                <div className={`relative w-full rounded-2xl overflow-hidden ${isDark ? 'bg-[#1a1a1a]' : 'bg-[#f7f8fb]'} ${selected ? 'ring-1 ring-blue-500/30' : ''}`}>
                     {data.textMode === 'editing' ? (
                         /* Editing Mode - Text Area */
                         <div className="p-4">
@@ -161,7 +165,9 @@ export const NodeContent: React.FC<NodeContentProps> = ({
                                     }
                                 }}
                                 placeholder={t('node.writePlaceholder')}
-                                className="w-full bg-transparent text-white text-sm resize-none outline-none placeholder:text-neutral-600"
+                                className={`w-full bg-transparent text-sm resize-none outline-none ${
+                                    isDark ? 'text-white placeholder:text-neutral-600' : 'text-neutral-900 placeholder:text-neutral-400'
+                                }`}
                                 style={{ minHeight: data.isPromptExpanded ? '300px' : '150px' }}
                                 autoFocus
                             />
@@ -170,7 +176,11 @@ export const NodeContent: React.FC<NodeContentProps> = ({
                                 <button
                                     onClick={() => onUpdate?.(data.id, { isPromptExpanded: !data.isPromptExpanded })}
                                     onPointerDown={(e) => e.stopPropagation()}
-                                    className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-neutral-500 hover:text-white hover:bg-neutral-700 rounded transition-colors"
+                                    className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded transition-colors ${
+                                        isDark
+                                            ? 'text-neutral-500 hover:text-white hover:bg-neutral-700'
+                                            : 'text-neutral-500 hover:text-neutral-900 hover:bg-neutral-200'
+                                    }`}
                                     title={data.isPromptExpanded ? t('node.shrinkArea') : t('node.expandArea')}
                                 >
                                     {data.isPromptExpanded ? <Shrink size={12} /> : <Expand size={12} />}
@@ -192,16 +202,19 @@ export const NodeContent: React.FC<NodeContentProps> = ({
                                     icon={<Pencil size={16} />}
                                     label={t('node.writeOwn')}
                                     onClick={() => onWriteContent?.(data.id)}
+                                    canvasTheme={canvasTheme}
                                 />
                                 <TextNodeMenuItem
                                     icon={<Video size={16} />}
                                     label={t('node.textToVideo')}
                                     onClick={() => onTextToVideo?.(data.id)}
+                                    canvasTheme={canvasTheme}
                                 />
                                 <TextNodeMenuItem
                                     icon={<ImageIcon size={16} />}
                                     label={t('node.textToImage')}
                                     onClick={() => onTextToImage?.(data.id)}
+                                    canvasTheme={canvasTheme}
                                 />
                             </div>
                         </div>
@@ -209,9 +222,10 @@ export const NodeContent: React.FC<NodeContentProps> = ({
                 </div>
             ) : (
                 /* Placeholder / Empty State for Image/Video */
-                <div className={`relative w-full aspect-[4/3] bg-[#141414] flex flex-col items-center justify-center gap-3 overflow-hidden
+                <div className={`relative w-full aspect-[4/3] flex flex-col items-center justify-center gap-3 overflow-hidden
+            ${isDark ? 'bg-[#141414]' : 'bg-[#f7f8fb]'}
             ${isLoading ? 'animate-pulse' : ''} 
-            ${!selected ? 'rounded-2xl' : 'rounded-xl border border-dashed border-neutral-800'}`
+            ${!selected ? 'rounded-2xl' : `rounded-xl border border-dashed ${isDark ? 'border-neutral-800' : 'border-neutral-300'}`}`
                 }>
                     {/* Input Image Preview for Video Nodes */}
                     {isVideoType && inputUrl && (
@@ -245,7 +259,11 @@ export const NodeContent: React.FC<NodeContentProps> = ({
                                     <button
                                         onClick={() => fileInputRef.current?.click()}
                                         onPointerDown={(e) => e.stopPropagation()}
-                                        className="flex items-center gap-2 px-4 py-2 bg-neutral-800/80 hover:bg-neutral-700 rounded-lg text-white text-sm font-medium transition-colors"
+                                        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                            isDark
+                                                ? 'bg-neutral-800/80 hover:bg-neutral-700 text-white'
+                                                : 'bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-200'
+                                        }`}
                                     >
                                         <Upload size={16} />
                                         {t('node.upload')}
@@ -253,7 +271,7 @@ export const NodeContent: React.FC<NodeContentProps> = ({
                                 </>
                             )}
 
-                            <div className="text-neutral-700">
+                            <div className={isDark ? 'text-neutral-700' : 'text-neutral-300'}>
                                 {isVideoType ? (
                                     isLocalModel ? <><Film size={40} /><HardDrive size={16} className="absolute -bottom-1 -right-1 text-purple-400" /></> : <Film size={40} />
                                 ) : (
@@ -278,11 +296,13 @@ export const NodeContent: React.FC<NodeContentProps> = ({
                                                 icon={<ImageIcon size={16} />}
                                                 label={t('node.imageToImage')}
                                                 onClick={() => onImageToImage?.(data.id)}
+                                                canvasTheme={canvasTheme}
                                             />
                                             <TextNodeMenuItem
                                                 icon={<Film size={16} />}
                                                 label={t('node.imageToVideo')}
                                                 onClick={() => onImageToVideo?.(data.id)}
+                                                canvasTheme={canvasTheme}
                                             />
                                         </div>
                                     )}
@@ -304,18 +324,26 @@ interface TextNodeMenuItemProps {
     icon: React.ReactNode;
     label: string;
     onClick?: () => void;
+    canvasTheme?: 'dark' | 'light';
 }
 
 /**
  * Menu item component for Text node options
  */
-const TextNodeMenuItem: React.FC<TextNodeMenuItemProps> = ({ icon, label, onClick }) => (
-    <button
-        className="flex items-center gap-3 w-full p-2.5 rounded-lg text-left text-neutral-400 hover:bg-[#252525] hover:text-white transition-colors"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={onClick}
-    >
-        <span className="text-neutral-500">{icon}</span>
-        <span className="text-sm font-medium">{label}</span>
-    </button>
-);
+const TextNodeMenuItem: React.FC<TextNodeMenuItemProps> = ({ icon, label, onClick, canvasTheme = 'dark' }) => {
+    const isDark = canvasTheme === 'dark';
+    return (
+        <button
+            className={`flex items-center gap-3 w-full p-2.5 rounded-lg text-left transition-colors ${
+                isDark
+                    ? 'text-neutral-400 hover:bg-[#252525] hover:text-white'
+                    : 'text-neutral-600 hover:bg-[#eef0f6] hover:text-neutral-900'
+            }`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onClick}
+        >
+            <span className={isDark ? 'text-neutral-500' : 'text-neutral-400'}>{icon}</span>
+            <span className="text-sm font-medium">{label}</span>
+        </button>
+    );
+};
