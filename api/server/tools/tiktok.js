@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import crypto from 'crypto';
+import { upsertMediaAsset } from '../db/mediaAssets.js';
 
 // ============================================================================
 // CONSTANTS
@@ -385,7 +386,8 @@ export async function processTikTokVideo(tiktokUrl, videosDir, enableTrim = true
         createdAt: new Date().toISOString(),
         type: 'videos'
     };
-    fs.writeFileSync(path.join(videosDir, metaFilename), JSON.stringify(metadata, null, 2));
+    // 元数据只写数据库（media_assets），不再落盘 <id>.json
+    await upsertMediaAsset(metadata, 'videos');
 
     // 7. Return result
     const filename = path.basename(finalPath);

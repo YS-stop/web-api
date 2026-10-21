@@ -7,7 +7,7 @@
 import { verifyToken } from '../services/jwt.js';
 import { getUserById } from '../services/userService.js';
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
     try {
         const authHeader = req.headers.authorization || '';
         const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -15,7 +15,7 @@ export function requireAuth(req, res, next) {
             return res.status(401).json({ error: '未登录' });
         }
         const payload = verifyToken(token);
-        const user = getUserById(payload.userId);
+        const user = await getUserById(payload.userId);
         if (!user || user.status !== 'active') {
             return res.status(401).json({ error: '用户不存在或已禁用' });
         }

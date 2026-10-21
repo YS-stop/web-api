@@ -13,10 +13,12 @@ import {
     Clock,
     AlertTriangle,
     LayoutTemplate,
+    ArrowUpRight,
 } from 'lucide-react';
 import { Project, fetchProject } from '../services/projectService';
+import { hydrateProjectState, persistUiState } from '../services/projectStateService';
 import { AnalyzedEpisode, formatDurationSeconds } from '../services/scriptAnalysisService';
-import { AssetConfirmPanel, loadAssetStore } from './AssetConfirmPanel';
+import { loadAssetStore } from './AssetConfirmPanel';
 import type { EpisodeMap } from './AssetConfirmPanel';
 
 // ============================================================================
@@ -41,6 +43,8 @@ interface WorkflowPageProps {
     onBack: () => void;
     /** 进入项目画布（二次确认后触发） */
     onEnterCanvas: (projectId: string) => void;
+    /** 跳转到项目详情页的「项目资产」标签（资产确认功能已迁至该处） */
+    onGoProjectAssets?: (projectId: string) => void;
 }
 
 // ============================================================================
@@ -82,12 +86,14 @@ const saveEpisodeTitles = (projectId: string, titles: Record<number, string>) =>
 // 页面组件
 // ============================================================================
 
-export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEpisode, onBack, onEnterCanvas }) => {
+export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEpisode, onBack, onEnterCanvas, onGoProjectAssets }) => {
     const [project, setProject] = useState<Project | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState('');
     const [stepIndex, setStepIndex] = useState(() => loadWorkflowStep(projectId));
     const [canvasConfirmOpen, setCanvasConfirmOpen] = useState(false);
+    // 制作状态是否已从服务端水合：未完成前禁止把本地空值回写数据库
+    const [stateReady, setStateReady] = useState(false);
 
     // 当前工作流步骤按项目记忆，刷新或从其他页面返回时不再退回基本信息。
     useEffect(() => {
@@ -100,7 +106,9 @@ export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEp
         } catch {
             /* 忽略浏览器存储不可用 */
         }
-    }, [projectId, stepIndex]);
+        // 水合完成前不回写，避免把初值 0 覆盖掉数据库里的真实进度
+        if (stateReady) persistUiState(projectId, 'workflow-step', stepIndex);
+    }, [projectId, stepIndex, stateReady]);
 
     // 加载项目
     useEffect(() => {
@@ -108,6 +116,7 @@ export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEp
         (async () => {
             setLoading(true);
             setLoadError('');
+            setStateReady(false);
             try {
                 const p = await fetchProject(projectId);
                 if (!cancelled) setProject(p);
@@ -115,6 +124,19 @@ export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEp
                 if (!cancelled) setLoadError(e.message || '加载项目失败');
             } finally {
                 if (!cancelled) setLoading(false);
+            }
+
+            // 从数据库拉制作状态并回填 localStorage（服务端为空时自动上迁本地历史数据）
+            try {
+                await hydrateProjectState(projectId);
+            } catch (error) {
+                console.warn('[workflow] 制作状态水合失败，使用本地缓存:', error);
+            }
+            if (!cancelled) {
+                setStepIndex(loadWorkflowStep(projectId));
+                setEpisodeTitles(loadEpisodeTitles(projectId));
+                setAssetState(loadAssetStore(projectId));
+                setStateReady(true);
             }
         })();
         return () => {
@@ -134,7 +156,8 @@ export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEp
 
     useEffect(() => {
         saveEpisodeTitles(projectId, episodeTitles);
-    }, [projectId, episodeTitles]);
+        if (stateReady) persistUiState(projectId, 'episode-titles', episodeTitles);
+    }, [projectId, episodeTitles, stateReady]);
 
     useEffect(() => {
         setActiveEpisodeIndex((i) => Math.min(i, Math.max(0, episodes.length - 1)));
@@ -176,14 +199,38 @@ export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEp
         } catch {
             /* 忽略存储不可用 */
         }
-    }, [activeEpisodeIndex, mergedEpisodes, projectId]);
+        if (stateReady) persistUiState(projectId, 'active-episode', ep.episode);
+    }, [activeEpisodeIndex, mergedEpisodes, projectId, stateReady]);
 
-    // 资产确认结果（含生成图）：从本地恢复，并随资产确认面板的改动更新
+    /**
+     * 资产确认结果（含生成图）：从本地恢复。
+     * 资产确认界面已迁至项目详情 →「项目资产」标签，这里只读取本地缓存用于展示完成度，
+     * 面板自身仍会持续写入同一个 localStorage 键，因此两边数据始终一致。
+     */
     const [assetState, setAssetState] = useState<EpisodeMap | null>(() => loadAssetStore(projectId));
 
-    const handleAssetsChange = React.useCallback((map: EpisodeMap) => {
-        setAssetState((prev) => (JSON.stringify(prev) === JSON.stringify(map) ? prev : map));
-    }, []);
+    useEffect(() => {
+        setAssetState(loadAssetStore(projectId));
+    }, [projectId]);
+
+    /** 资产完成度：去重后统计，同一资产跨集只算一次 */
+    const assetTotals = useMemo(() => {
+        const map = assetState || {};
+        const seen = new Set<string>();
+        let total = 0;
+        let generated = 0;
+        for (const catMap of Object.values(map)) {
+            for (const key of ['characters', 'scenes', 'props'] as const) {
+                for (const asset of catMap?.[key] || []) {
+                    if (seen.has(asset.id)) continue;
+                    seen.add(asset.id);
+                    total += 1;
+                    if (asset.imageUrl || asset.looks?.some((look) => look.imageUrl)) generated += 1;
+                }
+            }
+        }
+        return { total, generated };
+    }, [assetState]);
 
     // ============================================================================
     // 渲染
@@ -304,15 +351,52 @@ export const WorkflowPage: React.FC<WorkflowPageProps> = ({ projectId, initialEp
 
             {/* ============ 内容区 ============ */}
             <main className="relative z-10 flex-1 flex min-h-0">
-                {/* ---------- 步骤 3：资产确认（左侧选集栏由面板自绘） ---------- */}
+                {/* ---------- 步骤 3：资产确认（功能已迁至项目详情 → 项目资产标签） ---------- */}
                 {currentStep.key === 'assets' ? (
-                    <AssetConfirmPanel
-                        projectId={project.id}
-                        episodes={mergedEpisodes}
-                        contentType={project.category}
-                        onGoOverview={() => setStepIndex(0)}
-                        onAssetsChange={handleAssetsChange}
-                    />
+                    <div className="flex-1 flex items-center justify-center p-6 overflow-y-auto">
+                        <div className="w-full max-w-[560px] rounded-2xl border border-white/[0.08] bg-[#141419] p-8">
+                            <div className="mx-auto w-14 h-14 rounded-2xl bg-cyan-500/15 flex items-center justify-center mb-4">
+                                <Boxes size={26} className="text-cyan-300" />
+                            </div>
+                            <h2 className="text-[17px] font-semibold text-neutral-100 text-center">资产确认已迁移至项目详情</h2>
+                            <p className="text-[13px] text-neutral-500 mt-2 mb-6 leading-relaxed text-center">
+                                为避免同一份资产在两个页面重复维护，角色 / 场景 / 道具的确认与设定图生成，
+                                现已统一放到项目详情页的「项目资产」标签中。
+                            </p>
+
+                            {/* 资产完成度概览 */}
+                            <div className="grid grid-cols-3 gap-2 mb-6">
+                                {[
+                                    { label: '总集数', value: `${mergedEpisodes.length}` },
+                                    { label: '已识别资产', value: `${assetTotals.total}` },
+                                    { label: '已生成设定图', value: `${assetTotals.generated}` },
+                                ].map((item) => (
+                                    <div key={item.label} className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-3 text-center">
+                                        <div className="text-[20px] font-semibold text-neutral-100 leading-none">{item.value}</div>
+                                        <div className="mt-1.5 text-[11px] text-neutral-500">{item.label}</div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="flex flex-col gap-2">
+                                <button
+                                    onClick={() => onGoProjectAssets?.(projectId)}
+                                    disabled={!onGoProjectAssets}
+                                    className="h-10 px-5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-[14px] font-medium text-[#04231f] transition-colors inline-flex items-center justify-center gap-2"
+                                >
+                                    <Boxes size={16} />
+                                    前往项目资产确认
+                                    <ArrowUpRight size={15} />
+                                </button>
+                                <button
+                                    onClick={() => setStepIndex(3)}
+                                    className="h-10 px-5 rounded-xl border border-white/[0.12] text-[13px] text-neutral-300 hover:text-neutral-100 hover:border-white/[0.25] transition-colors"
+                                >
+                                    跳过，直接进入画布
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 ) : currentStep.key === 'canvas' ? (
                     <div className="flex-1 flex items-center justify-center p-6">
                         <div className="w-full max-w-[520px] rounded-2xl border border-white/[0.08] bg-[#141419] p-8 text-center">

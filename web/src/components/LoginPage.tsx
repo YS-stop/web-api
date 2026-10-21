@@ -15,7 +15,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
         setLoading(true);
         try {
             // 获取飞书授权页 URL 并跳转
-            const resp = await fetch('/api/auth/feishu/login-url');
+            const resp = await fetch('/api/auth/feishu/login-url', { cache: 'no-store' });
             const data = await resp.json();
             if (!data.url) throw new Error('获取登录地址失败');
             window.location.href = data.url;

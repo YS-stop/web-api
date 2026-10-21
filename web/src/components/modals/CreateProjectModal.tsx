@@ -24,7 +24,7 @@ import {
     formatDurationSeconds,
     ScriptAnalysis,
 } from '../../services/scriptAnalysisService';
-import { CONTENT_TYPES, DEPARTMENTS, OWNERS, PRODUCTION_MODES, ASPECT_RATIOS } from '../../services/projectService';
+import { CONTENT_TYPES, DEPARTMENTS, OWNERS, PRODUCTION_MODES, ASPECT_RATIOS, canAssignProject } from '../../services/projectService';
 
 // ============================================================================
 // 类型定义
@@ -43,6 +43,7 @@ export interface CreateProjectData {
     scriptName: string;       // 锁定剧本名
     dramaName: string;        // 剧目名
     totalEpisodes: number;    // 已确认集数
+    leaderId?: string;        // 归属组长（仅管理员 / 项目主管可选）
     scriptAnalysis?: ScriptAnalysis | null; // 剧本分集 + 资产（项目画布展示）
 }
 
@@ -329,9 +330,19 @@ interface CreateProjectModalProps {
     isOpen: boolean;
     onClose: () => void;
     onCreate: (data: CreateProjectData) => void;
+    /** 当前用户角色：管理员 / 项目主管可选择归属组长，组长只能建自己的 */
+    userRole?: string;
+    /** 可指派的组长列表（仅管理员 / 项目主管创建时使用） */
+    leaders?: { id: string; name: string }[];
 }
 
-export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, onClose, onCreate }) => {
+export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({
+    isOpen,
+    onClose,
+    onCreate,
+    userRole,
+    leaders = [],
+}) => {
     const [step, setStep] = useState(1);
 
     // 第 1 步：基础信息
@@ -342,6 +353,14 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
     const [productionMode, setProductionMode] = useState(PRODUCTION_MODES[1]);
     const [aspectRatio, setAspectRatio] = useState(ASPECT_RATIOS[0]);
     const [targetDuration, setTargetDuration] = useState(90);
+    // 归属组长（仅管理员 / 项目主管可指派；空字符串表示未分配）
+    const [leaderId, setLeaderId] = useState('');
+
+    const canAssign = canAssignProject(userRole);
+    const leaderOptions = ['未分配', ...leaders.map((l) => l.name)];
+    const leaderLabel = leaderId
+        ? leaders.find((l) => l.id === leaderId)?.name || '未分配'
+        : '未分配';
 
     // 第 2 步：选择剧本
     const [sourceTab, setSourceTab] = useState<'library' | 'upload'>('library');
@@ -385,6 +404,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
             setProductionMode(PRODUCTION_MODES[1]);
             setAspectRatio(ASPECT_RATIOS[0]);
             setTargetDuration(90);
+            setLeaderId('');
             setSourceTab('library');
             setSearch('');
             setSelectedScriptId(LIBRARY_SCRIPTS[0].id);
@@ -581,6 +601,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
             scriptName,
             dramaName,
             totalEpisodes,
+            leaderId: leaderId || undefined,
             scriptAnalysis: analysis,
         });
         onClose();
@@ -658,6 +679,21 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
                             <SelectField label="内容类型" required value={contentType} options={CONTENT_TYPES} onChange={setContentType} />
                             <SelectField label="制作部门" required value={department} options={DEPARTMENTS} onChange={setDepartment} />
                             <SelectField label="项目负责人" required value={owner} options={OWNERS} onChange={setOwner} />
+
+                            {/* 归属组长：管理员 / 项目主管可把项目指派给组长；组长自建时由后端强制为自己 */}
+                            {canAssign && (
+                                <div className="col-span-2 max-w-[260px]">
+                                    <SelectField
+                                        label="归属组长"
+                                        value={leaderLabel}
+                                        options={leaderOptions}
+                                        onChange={(v) => {
+                                            const found = leaders.find((l) => l.name === v);
+                                            setLeaderId(found ? found.id : '');
+                                        }}
+                                    />
+                                </div>
+                            )}
 
                             <div className="col-span-2">
                                 <label className="text-[13px] font-medium text-slate-700">生产模式</label>
@@ -1063,6 +1099,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
                                             ['已确认集数', `${totalEpisodes} 集`],
                                             ['生产模式', productionMode],
                                             ['项目负责人', owner],
+                                            ...(canAssign ? [['归属组长', leaderLabel] as [string, string]] : []),
                                         ].map(([k, v]) => (
                                             <tr key={k} className="border-b border-slate-100 last:border-0">
                                                 <td className="px-4 py-3 w-32 bg-[#fafafa] text-slate-500">{k}</td>

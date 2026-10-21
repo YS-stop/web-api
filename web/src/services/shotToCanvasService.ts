@@ -27,7 +27,7 @@
  * 4. 已有视频（shot.videoUrl）直接建成 SUCCESS 的 VIDEO 节点，不再触发生成。
  */
 
-import { NodeData, NodeStatus, NodeType } from '../types';
+import { CanvasAssetCategory, NodeData, NodeStatus, NodeType } from '../types';
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '../constants/modelDefaults';
 import { AnalyzedEpisode } from './scriptAnalysisService';
 import {
@@ -157,7 +157,7 @@ export const buildShotChain = (params: BuildShotChainParams): BuildShotChainResu
     const usedUrls = new Set<string>();
     let reusedRefCount = 0;
 
-    const pushRef = (name: string, url: string) => {
+    const pushRef = (name: string, url: string, category?: CanvasAssetCategory) => {
         if (!url || usedUrls.has(url)) return;
         usedUrls.add(url);
         refUrls.push(url);
@@ -189,12 +189,13 @@ export const buildShotChain = (params: BuildShotChainParams): BuildShotChainResu
             parentIds: [],
             // 标记来源，便于画布区分「分镜参考图」与用户自己建的图
             shotRefFor: shot.shotNumber,
+            assetCategory: category,
         };
         nodes.push(node);
         refParentIds.push(node.id);
     };
 
-    matched.forEach((m) => pushRef(m.name, m.url));
+    matched.forEach((m) => pushRef(m.name, m.url, m.category));
 
     // ---------- 2. 决定视频节点的输入模式 ----------
     // 有参考图 → 走 reference（多图作参考，不贴首帧）
@@ -264,9 +265,10 @@ export const buildShotChain = (params: BuildShotChainParams): BuildShotChainResu
         generateAudio: true,
         parentIds: refParentIds,
         videoInputMode: inputMode,
-        // 溯源信息：从哪个分镜来的，便于后续回写结果 / 去重
+        // 溯源信息：从哪个分镜来的，便于后续回写结果 / 去重 / 画布按场景分行
         shotEpisode: episode.episode,
         shotNumber: shot.shotNumber,
+        shotScene: shot.sceneNumber ? String(shot.sceneNumber) : undefined,
     };
 
     nodes.push(videoNode);

@@ -11,7 +11,10 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "db:migrate": "node server/db/migrate.js",
+    "db:import": "node server/db/importLegacy.js",
+    "db:setup": "node server/db/migrate.js && node server/db/importLegacy.js"
   },
   "dependencies": {
     "@fal-ai/client": "^1.8.0",
@@ -26,6 +29,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "openai": "^6.14.0",
+    "pg": "^8.23.1",
     "sharp": "^0.35.5",
     "twitter-api-v2": "^1.28.0",
     "ws": "^8.22.0"

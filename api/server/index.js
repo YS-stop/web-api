@@ -14,6 +14,7 @@ import dramaRoutes from './routes/drama.js';
 import authRoutes from './routes/auth.js';
 import usersRoutes from './routes/users.js';
 import projectsRoutes from './routes/projects.js';
+import projectStateRoutes from './routes/projectState.js';
 import ttsRoutes from './routes/tts.js';
 import dubbingRoutes from './routes/dubbing.js';
 import localModelsRoutes from './routes/local-models.js';
@@ -43,6 +44,7 @@ import {
     installProcessGuards,
 } from './middleware/errorHandler.js';
 import { restoreVideoTasks } from './services/videoTaskRunner.js';
+import { restoreImageTasks } from './services/imageTaskRunner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -54,6 +56,8 @@ ensureDirs([LIBRARY_DIR, WORKFLOWS_DIR, PROJECT_WORKFLOWS_DIR, IMAGES_DIR, VIDEO
 
 // 恢复上次进程未完成的视频任务：重启后继续轮询厂商并落盘（不依赖前端页面存活）
 restoreVideoTasks().catch((error) => console.error('[VideoTask] 恢复任务失败:', error));
+// 恢复上次进程未完成的图片任务：重启后继续生成并落盘
+restoreImageTasks().catch((error) => console.error('[ImageTask] 恢复任务失败:', error));
 
 // Enable CORS for all routes (must come before static file serving)
 app.use(cors());
@@ -186,6 +190,8 @@ app.use('/api/drama', dramaRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/projects', projectsRoutes);
+// 制作过程状态（资产确认 / 分镜 / 配音 / 任务台账），路径同为 /api/projects/:id/state
+app.use('/api/projects', projectStateRoutes);
 
 // Mount TTS routes (火山引擎豆包语音合成)
 app.use('/api/tts', ttsRoutes);

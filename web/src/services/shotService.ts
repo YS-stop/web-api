@@ -21,6 +21,7 @@ import {
     resolveStyleByContentType,
     resolveFormByContentType,
 } from './stylePresets';
+import { persistShots, persistShotHistory } from './projectStateService';
 
 // ============================================================================
 // 类型
@@ -84,11 +85,13 @@ export const getEpisodeShots = (projectId: string, episode: number): ShotState[]
 
 /**
  * 把某一集的分镜写回存储，保留其他集与历史记录不动。
+ * localStorage 作为同步缓存，同时异步落库（数据库为准）。
  */
 export const saveEpisodeShots = (projectId: string, episode: number, shots: ShotState[]) => {
     const store = loadShotStore(projectId);
     store.shots[String(episode)] = shots;
     saveShotStore(projectId, store);
+    persistShots(projectId, episode, shots);
 };
 
 /**
@@ -111,7 +114,10 @@ export const writeBackShotVideo = (
         changed = true;
         return { ...s, videoUrl };
     });
-    if (changed) saveEpisodeShots(projectId, episode, next);
+    if (changed) {
+        saveEpisodeShots(projectId, episode, next);
+        persistShotHistory(projectId, episode, shotNumber, { videoUrl });
+    }
 };
 
 // ============================================================================

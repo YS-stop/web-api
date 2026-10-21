@@ -1,10 +1,12 @@
 /**
  * AssetConfirmPanel.tsx
  *
- * 工作流「资产确认」步骤的深色主题界面（按集 / 按分类组织）。
+ * 「资产确认」界面（按集 / 按分类组织），同时用于：
+ *   1. 工作流页「资产确认」步骤；
+ *   2. 项目详情页「项目资产」标签页（浅色主题）。
  *
  * 结构对齐设计稿：
- *   左侧「总览 / 选集」导航  +  右侧主区
+ *   左侧「分集目录」导航  +  右侧主区
  *   主区：AI 提取信息条 → 图片模型/分辨率 + 一键生成全资产 → 分类 Tab → 资产卡片网格 → 新增卡片
  *
  * 资产编辑（新增 / 重命名 / 描述 / 造型数 / 音色 / 重绘）保存在本地
@@ -25,15 +27,17 @@ import {
     Package,
     Sparkles,
     Layers,
+    Plus,
     AlertCircle,
     ChevronDown,
+    ChevronLeft,
     X,
     Wand2,
     Play,
     Pause,
 } from 'lucide-react';
 import type { AnalyzedEpisode, AssetItem } from '../services/scriptAnalysisService';
-import { generateImage, getGenerationStatus } from '../services/generationService';
+import { submitImageTask, getImageTaskStatus } from '../services/generationService';
 import { resolveStyleByContentType, getAssetStyleImage, isLiveActionContentType } from '../services/stylePresets';
 import { runWithConcurrency, BATCH_CONCURRENCY } from '../utils/concurrency';
 import { AssetDetailDrawer } from './AssetDetailDrawer';
@@ -46,6 +50,8 @@ import {
     voiceLabel,
 } from '../services/voiceCatalog';
 import { previewKeyOf, useVoicePreview } from '../services/useVoicePreview';
+import { persistAssetState, persistJob } from '../services/projectStateService';
+import { finishJob } from '../services/generationTaskService';
 
 // ============================================================================
 // 常量
@@ -143,7 +149,15 @@ interface AssetGenerationJob {
     category: AssetCategory;
     assetId: string;
     lookId?: string;
+    /** 提交时的 prompt；任务在服务端丢失（notfound）时据此重新提交 */
+    prompt?: string;
     startedAt: number;
+    /** 资产名：任务列表展示用，资产后续改名不影响历史记录 */
+    assetName?: string;
+    /** 提交时的生成参数：重试按原参数重发，避免参数漂移 */
+    aspectRatio?: string;
+    resolution?: string;
+    imageModel?: string;
 }
 
 interface AssetConfirmPanelProps {
@@ -151,10 +165,14 @@ interface AssetConfirmPanelProps {
     episodes: AnalyzedEpisode[];
     /** 基本信息里的「内容类型」（见 CONTENT_TYPES），用于统一画面风格 */
     contentType?: string;
-    /** 点击左侧「总览」时回调 */
+    /** 初始选中的集号；不传则默认第一集 */
+    initialEpisode?: number;
+    /** 点击左侧「返回概览」时回调 */
     onGoOverview?: () => void;
     /** 资产数据变化回调（含生成图），供后续「视频生成」引用 */
     onAssetsChange?: (map: EpisodeMap) => void;
+    /** 铺满父容器高度（工作流步骤用）；详情页为卡片内嵌，靠内容撑高 */
+    fillHeight?: boolean;
 }
 
 // ============================================================================
@@ -292,6 +310,12 @@ const saveStore = (projectId: string, map: EpisodeMap) => {
     } catch {
         /* 忽略写入失败（隐私模式等） */
     }
+    // 按集异步落库（数据库为准，localStorage 为同步缓存）
+    for (const [episode, categories] of Object.entries(map)) {
+        const ep = Number(episode);
+        if (!Number.isFinite(ep) || ep <= 0) continue;
+        persistAssetState(projectId, ep, categories);
+    }
 };
 
 const loadAssetJobs = (projectId: string): AssetGenerationJob[] => {
@@ -308,6 +332,20 @@ const saveAssetJobs = (projectId: string, jobs: AssetGenerationJob[]) => {
         localStorage.setItem(assetJobsKey(projectId), JSON.stringify(jobs));
     } catch {
         /* ignore */
+    }
+    // 只同步「待认领」队列里的任务。
+    // 已结束的任务会从队列移除，但后端台账必须保留（那里有 succeeded/failed 终态）——
+    // 以前这里会对移除项调 removePersistedJob，结果「生成任务」页刚写进去的终态
+    // 又被删掉，页面上永远看不到历史与失败原因。
+    for (const job of jobs) {
+        persistJob(projectId, {
+            id: job.id,
+            kind: 'asset',
+            episode: job.episode,
+            status: 'running',
+            payload: job as unknown as Record<string, unknown>,
+            startedAt: job.startedAt,
+        });
     }
 };
 
@@ -455,11 +493,16 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
     projectId,
     episodes,
     contentType,
+    initialEpisode,
     onGoOverview,
     onAssetsChange,
+    fillHeight = true,
 }) => {
     const [assetMap, setAssetMap] = useState<EpisodeMap>(() => loadAssetStore(projectId) || buildEpisodeMap(episodes));
-    const [activeEpisode, setActiveEpisode] = useState<number>(() => episodes[0]?.episode ?? 1);
+    const [activeEpisode, setActiveEpisode] = useState<number>(() => {
+        if (initialEpisode && episodes.some((e) => e.episode === initialEpisode)) return initialEpisode;
+        return episodes[0]?.episode ?? 1;
+    });
     const [activeCategory, setActiveCategory] = useState<AssetCategory>('characters');
 
     // 交互态
@@ -656,49 +699,100 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
         });
 
         const recover = async () => {
-            const completed: AssetGenerationJob[] = [];
+            const done: AssetGenerationJob[] = [];
             for (const job of pendingJobs) {
                 try {
-                    const status = await getGenerationStatus(job.id);
-                    if (disposed || status.status !== 'success' || !status.resultUrl) continue;
-                    setAssetMap((prev) => {
-                        // 跨集找到该资产当前对象，据此计算 patch，再全局同步（生成图对所有集生效）
-                        const cats: AssetCategory[] = ['characters', 'scenes', 'props'];
-                        let current: EditableAsset | undefined;
-                        for (const catMap of Object.values(prev)) {
-                            for (const c of cats) {
-                                const found = (catMap[c] || []).find((a) => a.id === job.assetId);
-                                if (found) { current = found; break; }
+                    const status = await getImageTaskStatus(job.id);
+                    if (disposed) return;
+
+                    if (status.status === 'succeeded' && status.resultUrl) {
+                        setAssetMap((prev) => {
+                            // 跨集找到该资产当前对象，据此计算 patch，再全局同步（生成图对所有集生效）
+                            const cats: AssetCategory[] = ['characters', 'scenes', 'props'];
+                            let current: EditableAsset | undefined;
+                            for (const catMap of Object.values(prev)) {
+                                for (const c of cats) {
+                                    const found = (catMap[c] || []).find((a) => a.id === job.assetId);
+                                    if (found) { current = found; break; }
+                                }
+                                if (current) break;
                             }
-                            if (current) break;
+                            if (!current) return prev;
+                            const patch: Partial<EditableAsset> = job.lookId
+                                ? {
+                                    imageUrl: status.resultUrl,
+                                    looks: current.looks.map((look) => look.id === job.lookId ? { ...look, imageUrl: status.resultUrl } : look),
+                                }
+                                : {
+                                    imageUrl: status.resultUrl,
+                                    // 主图始终归属第一个造型（覆盖旧图），造型为空时补一个
+                                    looks: (current.looks.length > 0 ? current.looks : [{ id: uid(), name: '造型 1' }])
+                                        .map((look, index) => index === 0 ? { ...look, imageUrl: status.resultUrl } : look),
+                                };
+                            return syncAssetAcrossEpisodes(prev, job.category, job.assetId, patch);
+                        });
+                        finishJob(
+                            projectId,
+                            { id: job.id, kind: 'asset', episode: job.episode, payload: { ...job }, startedAt: job.startedAt },
+                            'succeeded',
+                            { resultUrl: status.resultUrl },
+                        );
+                        done.push(job);
+                        setGenerating((current) => {
+                            const next = { ...current };
+                            delete next[job.assetId];
+                            return next;
+                        });
+                    } else if (status.status === 'failed') {
+                        // 服务端明确失败：清理任务并提示（不重试，避免相同参数反复失败）
+                        setError(`有资产图片生成失败：${status.error || '未知错误'}`);
+                        finishJob(
+                            projectId,
+                            { id: job.id, kind: 'asset', episode: job.episode, payload: { ...job }, startedAt: job.startedAt },
+                            'failed',
+                            { error: status.error || '未知错误' },
+                        );
+                        done.push(job);
+                        setGenerating((current) => {
+                            const next = { ...current };
+                            delete next[job.assetId];
+                            return next;
+                        });
+                    } else if (status.status === 'notfound') {
+                        // 任务在服务端不存在（可能提交时被打断）：用持久化的 prompt 重新提交
+                        if (job.prompt) {
+                            await submitImageTask({
+                                prompt: job.prompt,
+                                aspectRatio: ASSET_ASPECT_RATIO,
+                                resolution: imageResolution,
+                                imageModel,
+                                nodeId: job.id,
+                                channel: 'workflow',
+                            });
+                        } else {
+                            // 没有 prompt（历史遗留任务）无法重建，放弃以免死循环
+                            finishJob(
+                                projectId,
+                                { id: job.id, kind: 'asset', episode: job.episode, payload: { ...job }, startedAt: job.startedAt },
+                                'failed',
+                                { error: '任务已从服务端丢失，且没有记录提示词，无法自动恢复' },
+                            );
+                            done.push(job);
+                            setGenerating((current) => {
+                                const next = { ...current };
+                                delete next[job.assetId];
+                                return next;
+                            });
                         }
-                        if (!current) return prev;
-                        const patch: Partial<EditableAsset> = job.lookId
-                            ? {
-                                imageUrl: status.resultUrl,
-                                looks: current.looks.map((look) => look.id === job.lookId ? { ...look, imageUrl: status.resultUrl } : look),
-                            }
-                            : {
-                                imageUrl: status.resultUrl,
-                                // 主图始终归属第一个造型（覆盖旧图），造型为空时补一个
-                                looks: (current.looks.length > 0 ? current.looks : [{ id: uid(), name: '造型 1' }])
-                                    .map((look, index) => index === 0 ? { ...look, imageUrl: status.resultUrl } : look),
-                            };
-                        return syncAssetAcrossEpisodes(prev, job.category, job.assetId, patch);
-                    });
-                    completed.push(job);
-                    setGenerating((current) => {
-                        const next = { ...current };
-                        delete next[job.assetId];
-                        return next;
-                    });
+                    }
+                    // running：继续等下一轮
                 } catch {
                     // 服务暂不可用时保留任务，下轮继续恢复。
                 }
             }
-            if (!disposed && completed.length) {
-                const completedIds = new Set(completed.map((job) => job.id));
-                setPendingJobs((jobs) => jobs.filter((job) => !completedIds.has(job.id)));
+            if (!disposed && done.length) {
+                const doneIds = new Set(done.map((job) => job.id));
+                setPendingJobs((jobs) => jobs.filter((job) => !doneIds.has(job.id)));
             }
         };
         void recover();
@@ -776,52 +870,53 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
         lookId?: string,
         override?: Partial<EditableAsset>
     ) => {
+        const target: EditableAsset = override ? { ...asset, ...override } : asset;
+        const look = lookId ? target.looks.find((l) => l.id === lookId) : undefined;
+        const prompt = buildAssetPrompt(category, target, look?.name, contentType);
+
+        // 文本改动（名称/描述）不依赖生成结果，先写回；图片由轮询结果写回
+        if (override) {
+            patchAsset(episode, category, asset.id, override);
+        }
+
         const job: AssetGenerationJob = {
             id: generationId(),
             episode,
             category,
             assetId: asset.id,
             lookId,
+            prompt,
             startedAt: Date.now(),
+            assetName: target.name,
+            aspectRatio: ASSET_ASPECT_RATIO,
+            resolution: imageResolution,
+            imageModel,
         };
         setError('');
         setGenerating((g) => ({ ...g, [asset.id]: lookId ?? null }));
-        // 先持久化任务，再发起请求；切页/刷新后可通过 nodeId 恢复服务端生成结果。
+        // 先持久化任务，再提交；切页/刷新后可通过 job.id 从服务端取回结果。
         saveAssetJobs(projectId, [...loadAssetJobs(projectId), job]);
         setPendingJobs((jobs) => [...jobs, job]);
         try {
-            const target: EditableAsset = override ? { ...asset, ...override } : asset;
-            const look = lookId ? target.looks.find((l) => l.id === lookId) : undefined;
-            const url = await generateImage({
-                prompt: buildAssetPrompt(category, target, look?.name, contentType),
+            // 提交任务（立即返回，不等生成完成）；生成结果由 recover 轮询写回，
+            // 不再把「同步等待出图」绑死在当前页面生命周期上。
+            await submitImageTask({
+                prompt,
                 aspectRatio: ASSET_ASPECT_RATIO,
                 resolution: imageResolution,
                 imageModel,
                 nodeId: job.id,
                 channel: 'workflow',
             });
-            // override 只承载名称 / 描述等文本改动，图片字段由本次生成结果决定
-            const base: Partial<EditableAsset> = override ? { ...override } : {};
-            if (lookId) {
-                patchAsset(episode, category, asset.id, {
-                    ...base,
-                    imageUrl: url,
-                    looks: target.looks.map((l) => (l.id === lookId ? { ...l, imageUrl: url } : l)),
-                });
-            } else {
-                // 主图与「造型 1」是同一份图：始终写回第一个造型（覆盖旧图），
-                // 造型为空时自动补一个，保证主图永远有造型归属、不产生游离图。
-                const looks = target.looks.length > 0
-                    ? target.looks
-                    : [{ id: uid(), name: '造型 1' }];
-                const syncedLooks = looks.map((l, i) => (i === 0 ? { ...l, imageUrl: url } : l));
-                patchAsset(episode, category, asset.id, { ...base, imageUrl: url, looks: syncedLooks });
-            }
         } catch (e: any) {
             setError(`「${asset.name}」生成失败：${e?.message || '未知错误'}`);
-        } finally {
-            // 成功、失败都会清理本次任务；若页面已卸载，状态更新会被忽略，
-            // 但 localStorage 中的任务仍会在下次进入时由恢复逻辑接管。
+            finishJob(
+                projectId,
+                { id: job.id, kind: 'asset', episode: job.episode, payload: { ...job }, startedAt: job.startedAt },
+                'failed',
+                { error: e?.message || '提交生成失败' },
+            );
+            // 提交失败：清理本次任务（服务端无任务，轮询也无法恢复）
             setPendingJobs((jobs) => jobs.filter((item) => item.id !== job.id));
             setGenerating((g) => {
                 const next = { ...g };
@@ -831,15 +926,16 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
         }
     };
 
-    /** 一键生成当前集全部资产图（角色 + 场景 + 道具），已有图的资产跳过（跨集复用，不重复生成） */
+    /** 一键生成当前集全部资产图（角色 + 场景 + 道具），已有图 / 生成中的资产跳过（跨集复用，不重复生成） */
     const handleGenerateAll = async () => {
-        if (batchGenerating) return;
+        // pendingJobs 非空 = 上一批还没跑完（含服务端后台生成），阻止重复提交
+        if (batchGenerating || pendingJobs.length > 0) return;
         const hasImage = (a: EditableAsset) =>
             !!a.imageUrl || (Array.isArray(a.looks) && a.looks.some((l) => !!l.imageUrl));
         const cats: AssetCategory[] = ['characters', 'scenes', 'props'];
         const targets = cats.flatMap((c) =>
             (assetMap[activeEpisode]?.[c] || [])
-                .filter((a) => !hasImage(a))
+                .filter((a) => !hasImage(a) && generating[a.id] === undefined)
                 .map((a) => ({ category: c, asset: a }))
         );
         if (targets.length === 0) return;
@@ -865,18 +961,17 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
     // ============================================================================
 
     return (
-        <div ref={rootRef} className="flex-1 flex min-h-0 min-w-0">
-            {/* ===================== 左侧：总览 / 选集 ===================== */}
-            <aside className="w-[60px] shrink-0 border-r border-white/[0.06] bg-[#0c0c11]/70 flex flex-col items-center gap-1 py-3">
-                <button
-                    onClick={onGoOverview}
-                    className="w-11 h-9 rounded-lg text-[12px] text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.06] transition-colors"
-                >
-                    总览
-                </button>
-                <div className="w-8 h-px bg-white/[0.08] my-1" />
-                <div className="text-[11px] text-neutral-600 mb-0.5">选集</div>
-                <div className="flex-1 w-full overflow-y-auto flex flex-col items-center gap-1.5 pb-2">
+        <div
+            ref={rootRef}
+            className={`flex min-w-0 gap-4 ${fillHeight ? 'flex-1 min-h-0' : 'h-[640px] min-h-[480px]'}`}
+        >
+            {/* ===================== 左侧：分集目录 ===================== */}
+            <aside className="w-[150px] shrink-0 overflow-hidden rounded-[10px] border border-[#e9ebf2] bg-white shadow-[0_2px_8px_rgba(33,43,83,0.03)] flex flex-col">
+                <div className="flex h-[44px] shrink-0 items-center justify-between gap-1 border-b border-[#eef0f6] px-3">
+                    <span className="text-[13px] font-medium text-[#1c2745]">分集目录</span>
+                    <span className="text-[11px] text-[#9ca4b7]">{episodes.length} 集</span>
+                </div>
+                <div className="flex-1 overflow-y-auto py-1">
                     {episodes.map((ep) => {
                         const active = ep.episode === activeEpisode;
                         return (
@@ -884,28 +979,44 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
                                 key={ep.episode}
                                 onClick={() => setActiveEpisode(ep.episode)}
                                 title={ep.title}
-                                className={`w-9 h-9 rounded-lg text-[13px] font-medium flex items-center justify-center transition-all ${
+                                className={`w-full border-l-2 px-3 py-2 text-left transition-colors ${
                                     active
-                                        ? 'bg-white/[0.1] text-white ring-1 ring-cyan-400/60'
-                                        : 'text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.06]'
+                                        ? 'border-[#4558dc] bg-[#f5f6ff]'
+                                        : 'border-transparent hover:bg-[#fafbff]'
                                 }`}
                             >
-                                {ep.episode}
+                                <div className={`text-[13px] font-medium ${active ? 'text-[#4558dc]' : 'text-[#1d2129]'}`}>
+                                    第 {String(ep.episode).padStart(2, '0')} 集
+                                </div>
+                                <div className={`mt-0.5 truncate text-[12px] ${active ? 'text-[#7f889d]' : 'text-[#9ca4b7]'}`}>
+                                    {ep.title || '未命名'}
+                                </div>
                             </button>
                         );
                     })}
                     {episodes.length === 0 && (
-                        <div className="text-[11px] text-neutral-600 px-1 text-center leading-tight">暂无分集</div>
+                        <div className="px-3 py-6 text-center text-[12px] leading-relaxed text-[#9ca4b7]">暂无分集</div>
                     )}
                 </div>
+                {onGoOverview && (
+                    <div className="shrink-0 border-t border-[#eef0f6] p-2">
+                        <button
+                            onClick={onGoOverview}
+                            className="flex h-8 w-full items-center justify-center gap-1 rounded-[4px] border border-[#d9d9d9] bg-white text-[12px] text-[#1d2129] transition-colors hover:border-[#4558dc] hover:text-[#4558dc]"
+                        >
+                            <ChevronLeft size={13} />
+                            返回概览
+                        </button>
+                    </div>
+                )}
             </aside>
 
             {/* ===================== 右侧：主区 ===================== */}
-            <div className="flex-1 min-w-0 overflow-y-auto">
-                <div className="px-5 py-4">
+            <div className="flex-1 min-w-0 overflow-y-auto rounded-[10px] border border-[#e9ebf2] bg-white shadow-[0_2px_8px_rgba(33,43,83,0.03)]">
+                <div className="px-6 py-5">
                     {/* ---------- AI 提取信息条 ---------- */}
-                    <div className="flex items-center gap-2 rounded-lg bg-cyan-500/[0.06] border border-cyan-400/20 px-3 py-2 text-[12px] text-cyan-200/90">
-                        <Sparkles size={13} className="shrink-0 text-cyan-300" />
+                    <div className="flex items-center gap-2 rounded-[6px] border border-[#dbe3ff] bg-[#f5f7ff] px-3 py-2 text-[12px] text-[#4558dc]">
+                        <Sparkles size={13} className="shrink-0 text-[#4558dc]" />
                         <span className="flex-1">
                             AI 已从第 {activeEpisode} 集剧本提取 {categoryCounts.characters} 个角色、{categoryCounts.scenes} 个场景、{categoryCounts.props} 个道具
                         </span>
@@ -913,7 +1024,7 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
 
                     {/* ---------- 错误提示 ---------- */}
                     {error && (
-                        <div className="mb-3 flex items-center gap-2 rounded-lg bg-red-500/10 border border-red-500/25 px-3 py-2 text-[12px] text-red-300">
+                        <div className="mb-3 flex items-center gap-2 rounded-[6px] border border-[#ffccc7] bg-[#fff2f0] px-3 py-2 text-[12px] text-[#cf1322]">
                             <AlertCircle size={14} className="shrink-0" />
                             <span className="flex-1">{error}</span>
                         </div>
@@ -921,7 +1032,7 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
 
                     {/* ---------- 生成工具行：模型 / 分辨率 / 一键生成全资产 ---------- */}
                     <div className="mt-4 flex items-center gap-2 flex-wrap">
-                        <span className="text-[12px] text-neutral-400">生成模型</span>
+                        <span className="text-[12px] text-[#4e5969]">生成模型</span>
                         <Select
                             value={imageModel}
                             options={IMAGE_MODELS.map((m) => m.id)}
@@ -932,7 +1043,7 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
                         <button
                             onClick={handleGenerateAll}
                             disabled={batchGenerating || categoryCounts.characters + categoryCounts.scenes + categoryCounts.props === 0}
-                            className="h-8 px-3 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed text-[12px] font-medium text-[#04231f] flex items-center gap-1.5 transition-colors"
+                            className="flex h-8 items-center gap-1.5 rounded-[4px] bg-[#4558dc] px-3 text-[12px] font-medium text-white transition-colors hover:bg-[#5c6fe4] disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             {batchGenerating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
                             一键生成全资产
@@ -941,7 +1052,7 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
                             onClick={handleAssignVoices}
                             disabled={assigningVoices || categoryCounts.characters === 0}
                             title="按人物小传的性别、年龄、性格自动选择音色（纯文本决策，不需要语音合成授权）"
-                            className="h-8 px-3 rounded-lg border border-cyan-400/30 text-cyan-200 hover:bg-cyan-400/10 disabled:opacity-40 disabled:cursor-not-allowed text-[12px] font-medium flex items-center gap-1.5 transition-colors"
+                            className="flex h-8 items-center gap-1.5 rounded-[4px] border border-[#4558dc] bg-white px-3 text-[12px] font-medium text-[#4558dc] transition-colors hover:bg-[#f5f6ff] disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             {assigningVoices ? <Loader2 size={13} className="animate-spin" /> : <Mic size={13} />}
                             AI 分配音色
@@ -949,21 +1060,21 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
                     </div>
 
                     {/* ---------- 分类 Tab ---------- */}
-                    <div className="mt-3 flex items-center gap-1 rounded-lg bg-white/[0.05] p-0.5 w-fit">
+                    <div className="mt-4 flex w-fit items-center gap-1 rounded-[6px] bg-[#f2f3f5] p-0.5">
                         {CATEGORY_META.map((cat) => {
                             const active = cat.key === activeCategory;
                             return (
                                 <button
                                     key={cat.key}
                                     onClick={() => setActiveCategory(cat.key)}
-                                    className={`h-7 px-3 rounded-md text-[13px] transition-colors ${
+                                    className={`h-7 rounded-[4px] px-3 text-[13px] transition-colors ${
                                         active
-                                            ? 'bg-white/[0.1] text-white'
-                                            : 'text-neutral-400 hover:text-neutral-200'
+                                            ? 'bg-white text-[#1d2129] shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
+                                            : 'text-[#4e5969] hover:text-[#1d2129]'
                                     }`}
                                 >
                                     {cat.label}
-                                    <span className={`ml-1.5 text-[11px] ${active ? 'text-cyan-300' : 'text-neutral-500'}`}>
+                                    <span className={`ml-1.5 text-[11px] ${active ? 'text-[#4558dc]' : 'text-[#9ca4b7]'}`}>
                                         {categoryCounts[cat.key]}
                                     </span>
                                 </button>
@@ -1028,9 +1139,9 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
                         {/* 新增卡片 */}
                         <button
                             onClick={() => handleAdd(activeCategory)}
-                            className="h-full min-h-[170px] rounded-xl border border-dashed border-white/[0.12] bg-white/[0.015] hover:border-cyan-400/40 hover:bg-cyan-400/[0.04] transition-colors flex flex-col items-center justify-center gap-2 text-neutral-500 hover:text-cyan-300"
+                            className="flex h-full min-h-[170px] flex-col items-center justify-center gap-2 rounded-[8px] border border-dashed border-[#d9d9d9] bg-[#fafbff] text-[#86909c] transition-colors hover:border-[#4558dc] hover:bg-[#f5f6ff] hover:text-[#4558dc]"
                         >
-                            <Sparkles size={20} />
+                            <Plus size={20} />
                             <span className="text-[13px]">
                                 {CATEGORY_META.find((c) => c.key === activeCategory)?.addLabel}
                             </span>
@@ -1079,12 +1190,12 @@ export const AssetConfirmPanel: React.FC<AssetConfirmPanelProps> = ({
                         <button
                             onClick={() => setPreviewSrc(null)}
                             title="关闭（Esc）"
-                            className="absolute top-4 right-4 h-9 w-9 rounded-lg bg-white/[0.08] hover:bg-white/[0.16] text-neutral-200 flex items-center justify-center transition-colors"
+                            className="absolute top-4 right-4 h-9 w-9 rounded-lg bg-white/[0.12] hover:bg-white/[0.22] text-white flex items-center justify-center transition-colors"
                         >
                             <X size={18} />
                         </button>
                         {previewTitle && (
-                            <div className="absolute top-4 left-5 text-[13px] text-neutral-300">{previewTitle}</div>
+                            <div className="absolute top-4 left-5 text-[13px] text-white/80">{previewTitle}</div>
                         )}
                         <img
                             src={previewSrc}
@@ -1192,10 +1303,10 @@ const AssetCard: React.FC<AssetCardProps> = ({
     const selectedVoiceId = normalizeVoiceId(asset.voiceName);
 
     return (
-        <div className="group relative rounded-xl border border-white/[0.08] bg-[#141419] flex flex-col">
+        <div className="group relative rounded-[8px] border border-[#e9ebf2] bg-white flex flex-col overflow-hidden transition-shadow hover:shadow-[0_4px_14px_rgba(33,43,83,0.10)]">
             {/* 图片区：固定横版比例，object-contain 完整显示不裁切 */}
             <div
-                className="relative bg-white/[0.03] overflow-hidden rounded-t-xl"
+                className="relative bg-[#f7f8fc] overflow-hidden"
                 style={{ aspectRatio: ASSET_CSS_ASPECT }}
             >
                 {asset.imageUrl ? (
@@ -1217,24 +1328,24 @@ const AssetCard: React.FC<AssetCardProps> = ({
                         type="button"
                         onClick={onOpenDetail}
                         title="点击进入详情"
-                        className="w-full h-full flex items-center justify-center text-neutral-700 text-[12px] cursor-pointer hover:text-neutral-500 transition-colors"
+                        className="w-full h-full flex items-center justify-center text-[#c2c7d2] text-[12px] cursor-pointer hover:text-[#86909c] transition-colors"
                     >
                         暂无图片 · 点击进入详情
                     </button>
                 )}
 
                 {generating && (
-                    <div className="absolute inset-0 bg-[#0d0d12]/88 backdrop-blur-[1px] flex flex-col items-center justify-center gap-2">
-                        <Loader2 size={22} className="animate-spin text-cyan-300" />
-                        <span className="text-[12px] text-cyan-200/90">正在生成…</span>
-                        <span className="h-1 w-14 rounded-full bg-white/[0.12] overflow-hidden">
-                            <span className="block h-full w-1/2 rounded-full bg-cyan-400/80 animate-pulse" />
+                    <div className="absolute inset-0 bg-white/88 backdrop-blur-[1px] flex flex-col items-center justify-center gap-2">
+                        <Loader2 size={22} className="animate-spin text-[#4558dc]" />
+                        <span className="text-[12px] text-[#4558dc]">正在生成…</span>
+                        <span className="h-1 w-14 rounded-full bg-[#edf0f7] overflow-hidden">
+                            <span className="block h-full w-1/2 rounded-full bg-[#4558dc]/70 animate-pulse" />
                         </span>
                     </div>
                 )}
 
                 {/* 造型数 */}
-                <span className="absolute bottom-1.5 left-1.5 rounded bg-black/50 px-1.5 py-0.5 text-[11px] text-neutral-300 backdrop-blur-sm">
+                <span className="absolute bottom-1.5 left-1.5 rounded bg-black/50 px-1.5 py-0.5 text-[11px] text-white backdrop-blur-sm">
                     {asset.looks.length}个造型
                 </span>
 
@@ -1243,7 +1354,7 @@ const AssetCard: React.FC<AssetCardProps> = ({
                     <button
                         onClick={onRegenerate}
                         title={asset.imageUrl ? '重新生成图片' : '生成图片'}
-                        className="absolute top-1.5 right-1.5 h-7 w-7 rounded-md bg-black/50 backdrop-blur-sm text-neutral-300 hover:text-cyan-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="absolute top-1.5 right-1.5 h-7 w-7 rounded-md bg-black/50 backdrop-blur-sm text-white hover:text-[#dbe3ff] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                     >
                         <RefreshCw size={13} />
                     </button>
@@ -1251,7 +1362,7 @@ const AssetCard: React.FC<AssetCardProps> = ({
             </div>
 
             {/* 信息 / 操作区 */}
-            <div className="flex items-center gap-1 px-2 py-1.5 border-t border-white/[0.06]">
+            <div className="flex items-center gap-1 px-2 py-1.5 border-t border-[#eef0f6]">
                 {renaming ? (
                     <input
                         autoFocus
@@ -1262,13 +1373,13 @@ const AssetCard: React.FC<AssetCardProps> = ({
                             if (e.key === 'Enter') onRenameCommit(draftName);
                             if (e.key === 'Escape') onRenameCommit(asset.name);
                         }}
-                        className="flex-1 min-w-0 h-6 rounded bg-white/[0.08] px-1.5 text-[13px] text-white outline-none ring-1 ring-cyan-400/50"
+                        className="flex-1 min-w-0 h-6 rounded bg-white px-1.5 text-[13px] text-[#1d2129] outline-none ring-1 ring-[#4558dc]"
                     />
                 ) : (
                     <button
                         onDoubleClick={onRenameStart}
                         title={asset.name}
-                        className="flex-1 min-w-0 text-left text-[13px] text-neutral-200 truncate hover:text-white"
+                        className="flex-1 min-w-0 text-left text-[13px] text-[#1d2129] truncate hover:text-[#4558dc]"
                     >
                         {asset.name}
                     </button>
@@ -1297,8 +1408,8 @@ const AssetCard: React.FC<AssetCardProps> = ({
                             }
                             className={`h-6 px-1.5 rounded text-[11px] flex items-center gap-1 transition-colors ${
                                 asset.voiceName
-                                    ? 'text-cyan-300'
-                                    : 'text-neutral-400 hover:text-neutral-100'
+                                    ? 'text-[#4558dc]'
+                                    : 'text-[#86909c] hover:text-[#1d2129]'
                             }`}
                         >
                             <Mic size={12} />
@@ -1315,38 +1426,36 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                     ...(customOpen ? {} : { height: VOICE_PANEL_H }),
                                     // 与项目其他面板一致：细滚动条（Chrome 121+ / Firefox 生效）
                                     scrollbarWidth: 'thin',
-                                    scrollbarColor: 'rgba(255,255,255,0.22) transparent',
+                                    scrollbarColor: 'rgba(0,0,0,0.2) transparent',
                                 }}
-                                className={`absolute right-0 z-30 w-56 overflow-y-auto overscroll-contain rounded-lg border border-white/[0.1] bg-[#1b1b22] shadow-xl py-1 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/20 hover:[&::-webkit-scrollbar-thumb]:bg-white/30 ${
+                                className={`absolute right-0 z-30 w-56 overflow-y-auto overscroll-contain rounded-[6px] border border-[#d9d9d9] bg-white shadow-[0_6px_20px_rgba(33,43,83,0.14)] py-1 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-black/15 hover:[&::-webkit-scrollbar-thumb]:bg-black/25 ${
                                     voiceDropUp ? 'bottom-full mb-1' : 'top-full mt-1'
                                 }`}
                             >
                                 {customOpen ? (
                                     <div className="px-2 pt-1.5 pb-2 space-y-1.5">
-                                        <div className="text-[11px] text-neutral-500">基础音色</div>
+                                        <div className="text-[11px] text-[#86909c]">基础音色</div>
                                         {/*
-                                            原生 select 的选项面板由系统绘制：深色界面下是浅底，
-                                            而选项文字继承了外层近白色 → 展开后整片空白看不见。
-                                            这里给 option / optgroup 显式指定深色底与文字色，
-                                            并自绘箭头（appearance-none）避免箭头在深底上消失。
+                                            原生 select 的选项面板由系统绘制；这里给 option / optgroup
+                                            显式指定浅色底与深色文字，避免系统面板与页面主题色错位看不清。
                                         */}
                                         <div className="relative">
                                             <select
                                                 value={draftVoiceBase}
                                                 onChange={(e) => setDraftVoiceBase(e.target.value)}
-                                                className="w-full h-7 appearance-none rounded bg-white/[0.07] pl-1.5 pr-6 text-[12px] text-neutral-100 outline-none cursor-pointer hover:bg-white/[0.1]"
+                                                className="w-full h-7 appearance-none rounded border border-[#d9d9d9] bg-white pl-1.5 pr-6 text-[12px] text-[#1d2129] outline-none cursor-pointer hover:border-[#4558dc]"
                                             >
                                                 {groupVoices().map((g) => (
                                                     <optgroup
                                                         key={g.title}
                                                         label={g.title}
-                                                        style={{ background: '#1b1b22', color: '#8b8b96' }}
+                                                        style={{ background: '#ffffff', color: '#86909c' }}
                                                     >
                                                         {g.items.map((v) => (
                                                             <option
                                                                 key={v.id}
                                                                 value={v.id}
-                                                                style={{ background: '#1b1b22', color: '#e5e5e5' }}
+                                                                style={{ background: '#ffffff', color: '#1d2129' }}
                                                             >
                                                                 {v.name}
                                                                 {isEnglishVoice(v) ? '（英文）' : ''}
@@ -1358,7 +1467,7 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                                 {!isKnownVoice(draftVoiceBase) && (
                                                     <option
                                                         value={draftVoiceBase}
-                                                        style={{ background: '#1b1b22', color: '#e5e5e5' }}
+                                                        style={{ background: '#ffffff', color: '#1d2129' }}
                                                     >
                                                         {draftVoiceBase}
                                                     </option>
@@ -1366,21 +1475,21 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                             </select>
                                             <ChevronDown
                                                 size={12}
-                                                className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-500"
+                                                className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[#86909c]"
                                             />
                                         </div>
                                         {draftBaseIsEnglish && (
-                                            <div className="text-[11px] leading-snug text-amber-300/80">
+                                            <div className="text-[11px] leading-snug text-[#d98100]">
                                                 英文音色只朗读英文文本，试听会用英文示例句
                                             </div>
                                         )}
-                                        <div className="text-[11px] text-neutral-500">风格提示词</div>
+                                        <div className="text-[11px] text-[#86909c]">风格提示词</div>
                                         <textarea
                                             value={draftVoicePrompt}
                                             onChange={(e) => setDraftVoicePrompt(e.target.value)}
                                             rows={3}
                                             placeholder="如：低沉沙哑、语速偏慢、带点疲惫的克制感"
-                                            className="w-full resize-none rounded bg-white/[0.07] px-1.5 py-1 text-[12px] leading-snug text-neutral-100 outline-none placeholder:text-neutral-600 focus:ring-1 focus:ring-cyan-400/40"
+                                            className="w-full resize-none rounded border border-[#d9d9d9] bg-white px-1.5 py-1 text-[12px] leading-snug text-[#1d2129] outline-none placeholder:text-[#c2c7d2] focus:border-[#4558dc]"
                                         />
                                         <button
                                             onClick={() =>
@@ -1389,8 +1498,8 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                             title="用示例句试听当前基础音色 + 风格提示词"
                                             className={`w-full h-7 rounded border text-[12px] flex items-center justify-center gap-1 transition-colors ${
                                                 previewingKey === customVoiceKey
-                                                    ? 'border-cyan-400/50 bg-cyan-400/10 text-cyan-200'
-                                                    : 'border-cyan-400/30 text-cyan-200 hover:bg-cyan-400/10'
+                                                    ? 'border-[#4558dc] bg-[#f5f6ff] text-[#4558dc]'
+                                                    : 'border-[#d9d9d9] text-[#4e5969] hover:border-[#4558dc] hover:text-[#4558dc]'
                                             }`}
                                         >
                                             {previewLoadingKey === customVoiceKey ? (
@@ -1408,13 +1517,13 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                                     onApplyVoice(draftVoiceBase, draftVoicePrompt.trim() || undefined);
                                                     setCustomOpen(false);
                                                 }}
-                                                className="flex-1 h-7 rounded bg-cyan-500 hover:bg-cyan-400 text-[12px] font-medium text-[#04231f]"
+                                                className="flex-1 h-7 rounded bg-[#4558dc] hover:bg-[#5c6fe4] text-[12px] font-medium text-white"
                                             >
                                                 应用
                                             </button>
                                             <button
                                                 onClick={() => setCustomOpen(false)}
-                                                className="h-7 px-2 rounded bg-white/[0.08] hover:bg-white/[0.12] text-[12px] text-neutral-300"
+                                                className="h-7 px-2 rounded border border-[#d9d9d9] bg-white hover:border-[#4558dc] text-[12px] text-[#4e5969]"
                                             >
                                                 取消
                                             </button>
@@ -1433,17 +1542,17 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                                                 prev[g.title] ? {} : { [g.title]: true }
                                                             )
                                                         }
-                                                        className="w-full h-8 px-2.5 flex items-center justify-between text-[12px] text-neutral-200 hover:bg-white/[0.07]"
+                                                        className="w-full h-8 px-2.5 flex items-center justify-between text-[12px] text-[#1d2129] hover:bg-[#f5f6ff]"
                                                     >
                                                         <span className="flex items-center gap-1.5">
                                                             {g.title}
-                                                            <span className="text-[10px] text-neutral-600">
+                                                            <span className="text-[10px] text-[#9ca4b7]">
                                                                 {g.items.length}
                                                             </span>
                                                         </span>
                                                         <ChevronDown
                                                             size={12}
-                                                            className={`text-neutral-500 transition-transform ${
+                                                            className={`text-[#86909c] transition-transform ${
                                                                 open ? 'rotate-180' : ''
                                                             }`}
                                                         />
@@ -1461,13 +1570,13 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                                                         <button
                                                                             onClick={() => onPickVoice(v.id)}
                                                                             title={v.desc}
-                                                                            className="flex-1 min-w-0 text-left pl-5 pr-2 py-1.5 text-[12px] hover:bg-white/[0.07] flex items-center justify-between gap-1"
+                                                                            className="flex-1 min-w-0 text-left pl-5 pr-2 py-1.5 text-[12px] hover:bg-[#f5f6ff] flex items-center justify-between gap-1"
                                                                         >
                                                                             <span
                                                                                 className={`truncate ${
                                                                                     selected
-                                                                                        ? 'text-cyan-300'
-                                                                                        : 'text-neutral-300'
+                                                                                        ? 'text-[#4558dc]'
+                                                                                        : 'text-[#4e5969]'
                                                                                 }`}
                                                                             >
                                                                                 {v.name}
@@ -1481,8 +1590,8 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                                                             title={playing ? '停止试听' : '试听该音色'}
                                                                             className={`mr-1 h-6 w-6 shrink-0 rounded flex items-center justify-center transition-colors ${
                                                                                 playing || busy
-                                                                                    ? 'text-cyan-300 bg-cyan-400/10'
-                                                                                    : 'text-neutral-500 hover:text-cyan-300 hover:bg-white/[0.07]'
+                                                                                    ? 'text-[#4558dc] bg-[#f5f6ff]'
+                                                                                    : 'text-[#86909c] hover:text-[#4558dc] hover:bg-[#f5f6ff]'
                                                                             }`}
                                                                         >
                                                                             {busy ? (
@@ -1505,12 +1614,12 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                             );
                                         })}
                                         {asset.voicePrompt && (
-                                            <div className="mx-2 mt-1 max-h-[30px] overflow-hidden rounded bg-cyan-400/[0.06] px-1.5 py-1 text-[11px] leading-snug text-cyan-200/80">
+                                            <div className="mx-2 mt-1 max-h-[30px] overflow-hidden rounded bg-[#f5f6ff] px-1.5 py-1 text-[11px] leading-snug text-[#4558dc]">
                                                 风格：{asset.voicePrompt}
                                             </div>
                                         )}
-                                        <div className="sticky bottom-0 bg-[#1b1b22]">
-                                            <div className="h-px bg-white/[0.08] my-1" />
+                                        <div className="sticky bottom-0 bg-white">
+                                            <div className="h-px bg-[#eef0f6] my-1" />
                                             <button
                                                 onClick={() => {
                                                     setDraftVoiceBase(selectedVoiceId);
@@ -1518,7 +1627,7 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                                     setCustomOpen(true);
                                                 }}
                                                 title="用自然语言描述音色风格，配合基础音色使用"
-                                                className="w-full text-left px-2.5 py-1.5 text-[12px] text-cyan-300 hover:bg-white/[0.07] flex items-center gap-1.5"
+                                                className="w-full text-left px-2.5 py-1.5 text-[12px] text-[#4558dc] hover:bg-[#f5f6ff] flex items-center gap-1.5"
                                             >
                                                 <Wand2 size={12} />
                                                 自定义音色…
@@ -1527,7 +1636,7 @@ const AssetCard: React.FC<AssetCardProps> = ({
                                     </div>
                                 )}
                                 {previewError && (
-                                    <div className="px-2.5 pt-1 pb-1.5 text-[11px] leading-snug text-red-300">
+                                    <div className="px-2.5 pt-1 pb-1.5 text-[11px] leading-snug text-[#cf1322]">
                                         {previewError}
                                     </div>
                                 )}
@@ -1543,7 +1652,7 @@ const AssetCard: React.FC<AssetCardProps> = ({
                             e.stopPropagation();
                             onToggleMenu();
                         }}
-                        className="h-6 w-6 rounded text-neutral-400 hover:text-neutral-100 hover:bg-white/[0.07] flex items-center justify-center"
+                        className="h-6 w-6 rounded text-[#86909c] hover:text-[#1d2129] hover:bg-[#f2f3f5] flex items-center justify-center"
                     >
                         <MoreHorizontal size={14} />
                     </button>
@@ -1551,12 +1660,12 @@ const AssetCard: React.FC<AssetCardProps> = ({
                     {menuOpen && (
                         <div
                             onMouseDown={(e) => e.stopPropagation()}
-                            className="absolute right-0 bottom-full mb-1 z-30 w-36 rounded-lg border border-white/[0.1] bg-[#1b1b22] shadow-xl py-1"
+                            className="absolute right-0 bottom-full mb-1 z-30 w-36 rounded-[6px] border border-[#d9d9d9] bg-white shadow-[0_6px_20px_rgba(33,43,83,0.14)] py-1"
                         >
                             <MenuItem icon={Pencil} label="编辑名称/描述" onClick={onEdit} />
                             <MenuItem icon={RefreshCw} label={asset.imageUrl ? '重新生成' : '生成图片'} onClick={onRegenerate} />
                             <MenuItem icon={Layers} label="新增造型" onClick={onAddLook} />
-                            <div className="h-px bg-white/[0.08] my-1" />
+                            <div className="h-px bg-[#eef0f6] my-1" />
                             <MenuItem icon={Trash2} label="删除" danger onClick={onRemove} />
                         </div>
                     )}
@@ -1574,8 +1683,8 @@ const MenuItem: React.FC<{
 }> = ({ icon: Icon, label, onClick, danger }) => (
     <button
         onClick={onClick}
-        className={`w-full text-left px-2.5 py-1.5 text-[12px] flex items-center gap-2 hover:bg-white/[0.07] ${
-            danger ? 'text-red-400 hover:text-red-300' : 'text-neutral-300'
+        className={`w-full text-left px-2.5 py-1.5 text-[12px] flex items-center gap-2 hover:bg-[#f5f6ff] ${
+            danger ? 'text-[#cf1322] hover:text-[#a8071a]' : 'text-[#4e5969]'
         }`}
     >
         <Icon size={13} />
@@ -1606,13 +1715,13 @@ const Select: React.FC<{
         <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
             <button
                 onClick={() => setOpen((v) => !v)}
-                className="h-8 px-2.5 rounded-lg bg-white/[0.06] border border-white/[0.08] text-[12px] text-neutral-300 hover:border-white/[0.2] flex items-center gap-1 transition-colors"
+                className="flex h-8 items-center gap-1 rounded-[4px] border border-[#d9d9d9] bg-white px-2.5 text-[12px] text-[#1d2129] transition-colors hover:border-[#4558dc]"
             >
                 <span className="truncate max-w-[150px]">{current}</span>
-                <ChevronDown size={12} className="shrink-0 text-neutral-500" />
+                <ChevronDown size={12} className="shrink-0 text-[#86909c]" />
             </button>
             {open && (
-                <div className="absolute right-0 top-full mt-1 z-30 w-44 rounded-lg border border-white/[0.1] bg-[#1b1b22] shadow-xl py-1 max-h-56 overflow-y-auto">
+                <div className="absolute right-0 top-full mt-1 z-30 w-44 rounded-[6px] border border-[#d9d9d9] bg-white shadow-[0_6px_20px_rgba(33,43,83,0.14)] py-1 max-h-56 overflow-y-auto">
                     {options.map((o, i) => (
                         <button
                             key={o}
@@ -1620,8 +1729,8 @@ const Select: React.FC<{
                                 onChange(o);
                                 setOpen(false);
                             }}
-                            className={`w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-white/[0.07] ${
-                                o === value ? 'text-cyan-300' : 'text-neutral-300'
+                            className={`w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-[#f5f6ff] ${
+                                o === value ? 'text-[#4558dc]' : 'text-[#4e5969]'
                             }`}
                         >
                             {labels ? labels[i] : o}

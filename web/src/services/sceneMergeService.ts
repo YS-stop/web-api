@@ -15,6 +15,7 @@
 
 import { mergeVideos, type AudioMode } from './mergeService';
 import type { ShotState } from './shotService';
+import { persistSceneMerge } from './projectStateService';
 
 // ============================================================================
 // 类型
@@ -114,6 +115,12 @@ const saveSceneMerges = (projectId: string, store: SceneMergeStore) => {
         localStorage.setItem(storeKey(projectId), JSON.stringify(store));
     } catch {
         /* 配额满或隐私模式：忽略 */
+    }
+    // 按集异步落库（数据库为准）
+    for (const [episode, payload] of Object.entries(store)) {
+        const ep = Number(episode);
+        if (!Number.isFinite(ep) || ep <= 0) continue;
+        persistSceneMerge(projectId, ep, payload as unknown as Record<string, unknown>);
     }
 };
 

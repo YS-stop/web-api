@@ -21,6 +21,9 @@ export enum NodeStatus {
   ERROR = 'error'
 }
 
+/** 画布参考图所属的资产分类，用于画布层的归类与去重。 */
+export type CanvasAssetCategory = 'characters' | 'scenes' | 'props';
+
 export interface NodeData {
   id: string;
   type: NodeType;
@@ -136,7 +139,11 @@ export interface NodeData {
   // 分镜溯源（由「分镜 → 画布」生成的节点携带，用于回写生成结果）
   shotEpisode?: number; // 该节点来自第几集的分镜
   shotNumber?: number; // 该节点对应第几个分镜
+  /** 该节点对应分镜所属场号（如 4-1），画布按场景分行排布时使用 */
+  shotScene?: string;
   shotRefFor?: number; // 参考图节点：为第几个分镜提供参考
+  /** 参考图节点所属资产分类（人物 / 场景 / 道具） */
+  assetCategory?: CanvasAssetCategory;
 }
 
 export interface ContextMenuState {

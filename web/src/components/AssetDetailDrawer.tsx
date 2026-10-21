@@ -204,18 +204,18 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
     };
 
     return (
-        <div className="fixed inset-0 z-[90] bg-[#0c0c11] flex flex-col">
+        <div className="fixed inset-0 z-[90] bg-[#f5f6fa] flex flex-col">
             {/* ===================== 顶部 ===================== */}
-            <header className="h-12 shrink-0 px-4 flex items-center gap-3 border-b border-white/[0.08]">
+            <header className="h-12 shrink-0 px-4 flex items-center gap-3 border-b border-[#e9ebf2]">
                 <button
                     onClick={onClose}
                     title="关闭（Esc）"
-                    className="h-8 w-8 -ml-1 rounded-lg text-neutral-400 hover:text-white hover:bg-white/[0.07] flex items-center justify-center transition-colors"
+                    className="h-8 w-8 -ml-1 rounded-lg text-[#4e5969] hover:text-[#1d2129] hover:bg-[#f5f6ff] flex items-center justify-center transition-colors"
                 >
                     <X size={18} />
                 </button>
-                <span className="text-[14px] font-medium text-neutral-100 truncate">{draftName}</span>
-                <span className="text-[11px] text-neutral-600">内容由 AI 生成，仅供参考</span>
+                <span className="text-[14px] font-medium text-[#1d2129] truncate">{draftName}</span>
+                <span className="text-[11px] text-[#9ca4b7]">内容由 AI 生成，仅供参考</span>
             </header>
 
             {/* ===================== 主体 ===================== */}
@@ -223,17 +223,17 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                 {/* ---------- 左栏：大图 / 历史记录 / 描述 ---------- */}
                 <div className="flex-1 min-w-0 flex flex-col">
                     {/* 工具行 */}
-                    <div className="h-10 shrink-0 px-4 flex items-center justify-between border-b border-white/[0.06]">
-                        <span className="rounded bg-cyan-500/15 text-cyan-300 text-[11px] px-2 py-0.5">
+                    <div className="h-10 shrink-0 px-4 flex items-center justify-between border-b border-[#eef0f6]">
+                        <span className="rounded bg-[#eef0ff] text-[#4558dc] text-[11px] px-2 py-0.5">
                             {current ? `当前：${current.label}` : '暂无图片'}
                         </span>
                         <div className="flex items-center gap-2">
-                            <span className="text-[11px] text-neutral-500">已生成 {gallery.length} 张</span>
+                            <span className="text-[11px] text-[#86909c]">已生成 {gallery.length} 张</span>
                             {gallery.length > 1 && (
                                 <button
                                     onClick={cycle}
                                     title="换一张"
-                                    className="h-7 px-2 rounded-md border border-white/[0.12] text-[11px] text-neutral-300 hover:text-cyan-300 hover:border-cyan-400/40 flex items-center gap-1 transition-colors"
+                                    className="h-7 px-2 rounded-md border border-[#d9d9d9] text-[11px] text-[#4e5969] hover:text-[#4558dc] hover:border-[#4558dc] flex items-center gap-1 transition-colors"
                                 >
                                     <RefreshCw size={12} />
                                     换一张
@@ -243,7 +243,7 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                     </div>
 
                     {/* 大图：用绝对定位容器固定可用空间，图片按容器自适应缩放，不溢出 */}
-                    <div className="relative flex-1 min-h-0 bg-[#0a0a0e]">
+                    <div className="relative flex-1 min-h-0 bg-[#f7f8fc]">
                         {current ? (
                             <button
                                 onClick={() => onPreview(current.src, `${asset.name} · ${current.label}`)}
@@ -253,28 +253,28 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                 <img
                                     src={current.src}
                                     alt={asset.name}
-                                    className="max-h-full max-w-full object-contain rounded-lg border border-white/[0.07] shadow-2xl"
+                                    className="max-h-full max-w-full object-contain rounded-lg border border-[#eef0f6] shadow-[0_8px_28px_rgba(33,43,83,0.16)]"
                                 />
                                 {mainGenerating && (
-                                    <span className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-lg bg-[#0a0a0e]/85">
-                                        <Loader2 size={26} className="animate-spin text-cyan-300" />
-                                        <span className="text-[13px] text-cyan-200/90">正在生成…</span>
-                                        <span className="h-1 w-20 rounded-full bg-white/[0.12] overflow-hidden">
-                                            <span className="block h-full w-1/2 rounded-full bg-cyan-400/80 animate-pulse" />
+                                    <span className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-lg bg-[#f7f8fc]/85">
+                                        <Loader2 size={26} className="animate-spin text-[#4558dc]" />
+                                        <span className="text-[13px] text-[#4558dc]">正在生成…</span>
+                                        <span className="h-1 w-20 rounded-full bg-[#e9ebf2] overflow-hidden">
+                                            <span className="block h-full w-1/2 rounded-full bg-[#4558dc]/70 animate-pulse" />
                                         </span>
                                     </span>
                                 )}
                             </button>
                         ) : mainGenerating ? (
                             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                                <Loader2 size={28} className="animate-spin text-cyan-300" />
-                                <span className="text-[13px] text-cyan-200/90">正在生成…</span>
-                                <span className="h-1 w-20 rounded-full bg-white/[0.12] overflow-hidden">
-                                    <span className="block h-full w-1/2 rounded-full bg-cyan-400/80 animate-pulse" />
+                                <Loader2 size={28} className="animate-spin text-[#4558dc]" />
+                                <span className="text-[13px] text-[#4558dc]">正在生成…</span>
+                                <span className="h-1 w-20 rounded-full bg-[#e9ebf2] overflow-hidden">
+                                    <span className="block h-full w-1/2 rounded-full bg-[#4558dc]/70 animate-pulse" />
                                 </span>
                             </div>
                         ) : (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-neutral-600">
+                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-[#9ca4b7]">
                                 <ImageOff size={30} />
                                 <span className="text-[13px]">暂无图片，点击右下角「生成」</span>
                             </div>
@@ -286,15 +286,15 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                         const text = isCharacter && asset.bio ? asset.bio : asset.description;
                         if (!text) return null;
                         return (
-                            <div className="shrink-0 max-h-32 overflow-y-auto border-t border-white/[0.06] px-4 py-3">
-                                <p className="text-[12px] leading-relaxed text-neutral-400">{text}</p>
+                            <div className="shrink-0 max-h-32 overflow-y-auto border-t border-[#eef0f6] px-4 py-3">
+                                <p className="text-[12px] leading-relaxed text-[#4e5969]">{text}</p>
                             </div>
                         );
                     })()}
 
                     {/* 历史记录（单行紧凑，尽量把高度留给大图） */}
-                    <div className="shrink-0 border-t border-white/[0.06] px-4 py-2 flex items-center gap-3">
-                        <div className="shrink-0 text-[11px] text-neutral-500">历史记录</div>
+                    <div className="shrink-0 border-t border-[#eef0f6] px-4 py-2 flex items-center gap-3">
+                        <div className="shrink-0 text-[11px] text-[#86909c]">历史记录</div>
                         {gallery.length > 0 ? (
                             <div className="flex-1 min-w-0 flex gap-2 overflow-x-auto py-0.5">
                                 {gallery.map((g) => (
@@ -304,32 +304,32 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                         title={`${g.label}（点击查看）`}
                                         className={`group relative shrink-0 w-14 h-14 rounded-md overflow-hidden border transition-colors ${
                                             g.key === currentKey
-                                                ? 'border-cyan-400/70 ring-1 ring-cyan-400/40'
-                                                : 'border-white/[0.1] hover:border-white/[0.28]'
+                                                ? 'border-[#4558dc] ring-1 ring-[rgba(69,88,220,0.4)]'
+                                                : 'border-[#d9d9d9] hover:border-[#4558dc]'
                                         }`}
                                     >
                                         <img src={g.src} alt={g.label} className="w-full h-full object-cover" />
                                         {/* 角标：与右侧造型列表同名，便于确认删留 */}
-                                        <span className="absolute inset-x-0 bottom-0 bg-black/65 text-[9px] leading-[13px] text-neutral-200 text-center truncate px-0.5">
+                                        <span className="absolute inset-x-0 bottom-0 bg-black/65 text-[9px] leading-[13px] text-[#1d2129] text-center truncate px-0.5">
                                             {g.label}
                                         </span>
                                     </button>
                                 ))}
                             </div>
                         ) : (
-                            <span className="text-[11px] text-neutral-600">生成后在此查看</span>
+                            <span className="text-[11px] text-[#9ca4b7]">生成后在此查看</span>
                         )}
                     </div>
                 </div>
 
                 {/* ---------- 右栏：属性 / 造型 / 提示词 / 生成 ---------- */}
-                <aside className="w-[380px] shrink-0 border-l border-white/[0.06] bg-[#141419] flex flex-col">
+                <aside className="w-[380px] shrink-0 border-l border-[#eef0f6] bg-white flex flex-col">
                     {/* 标题 */}
-                    <div className="shrink-0 px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
-                        <span className="text-[13px] text-neutral-200">{CATEGORY_LABEL[category]}</span>
+                    <div className="shrink-0 px-4 py-3 border-b border-[#eef0f6] flex items-center justify-between">
+                        <span className="text-[13px] text-[#1d2129]">{CATEGORY_LABEL[category]}</span>
                         <button
                             onClick={onAddLook}
-                            className="h-7 px-2 rounded-md border border-white/[0.12] text-[11px] text-neutral-300 hover:text-cyan-300 hover:border-cyan-400/40 flex items-center gap-1 transition-colors"
+                            className="h-7 px-2 rounded-md border border-[#d9d9d9] text-[11px] text-[#4e5969] hover:text-[#4558dc] hover:border-[#4558dc] flex items-center gap-1 transition-colors"
                         >
                             <Plus size={12} />
                             新增造型
@@ -339,7 +339,7 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                     <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
                         {/* 名称 */}
                         <label className="block">
-                            <span className="text-[12px] text-neutral-400">名称</span>
+                            <span className="text-[12px] text-[#4e5969]">名称</span>
                             <input
                                 value={draftName}
                                 onChange={(e) => setDraftName(e.target.value)}
@@ -347,21 +347,21 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                 onKeyDown={(e) => {
                                     if (e.key === 'Enter') onSave(commitPatch());
                                 }}
-                                className="mt-1.5 w-full h-9 rounded-lg bg-white/[0.06] border border-white/[0.08] px-3 text-[13px] text-neutral-100 outline-none focus:border-cyan-400/50"
+                                className="mt-1.5 w-full h-9 rounded-lg bg-[#fafbff] border border-[#e9ebf2] px-3 text-[13px] text-[#1d2129] outline-none focus:border-[#4558dc]"
                             />
                         </label>
 
                         {/* 造型 / 图片列表：与历史记录一一对应，逐张可查看 / 重绘 / 删除 */}
                         <div>
                             <div className="flex items-center justify-between mb-1.5">
-                                <span className="text-[12px] text-neutral-400">造型</span>
-                                <span className="text-[11px] text-neutral-600">
+                                <span className="text-[12px] text-[#4e5969]">造型</span>
+                                <span className="text-[11px] text-[#9ca4b7]">
                                     {gallery.length} 张 / {asset.looks.length} 个造型
                                 </span>
                             </div>
                             <div className="space-y-1.5">
                                 {asset.looks.length === 0 && !mainIsDetached && (
-                                    <div className="rounded-lg border border-dashed border-white/[0.1] px-2 py-3 text-center text-[11px] text-neutral-600">
+                                    <div className="rounded-lg border border-dashed border-[#d9d9d9] px-2 py-3 text-center text-[11px] text-[#9ca4b7]">
                                         暂无造型，点击右上「新增造型」添加
                                     </div>
                                 )}
@@ -370,26 +370,26 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                     <div
                                         className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 transition-colors ${
                                             currentKey === 'main'
-                                                ? 'border-cyan-400/50 bg-cyan-400/[0.06]'
-                                                : 'border-white/[0.06] bg-white/[0.02]'
+                                                ? 'border-[#4558dc] bg-[#f5f6ff]'
+                                                : 'border-[#eef0f6] bg-[#fafbff]'
                                         }`}
                                     >
                                         <button
                                             onClick={() => setCurrentKey('main')}
                                             title="点击查看"
-                                            className="w-9 h-9 rounded bg-[#0d0d12] overflow-hidden shrink-0 flex items-center justify-center cursor-pointer"
+                                            className="w-9 h-9 rounded bg-[#f2f3f5] overflow-hidden shrink-0 flex items-center justify-center cursor-pointer"
                                         >
                                             <img src={asset.imageUrl} alt="" className="w-full h-full object-cover" />
                                         </button>
                                         <span className="flex-1 min-w-0">
-                                            <span className="block text-[12px] text-neutral-300 truncate">主图</span>
-                                            <span className="block text-[10px] text-amber-300/70">未归属造型</span>
+                                            <span className="block text-[12px] text-[#4e5969] truncate">主图</span>
+                                            <span className="block text-[10px] text-[#d98100]">未归属造型</span>
                                         </span>
                                         <button
                                             onClick={() => onGenerate(commitPatch())}
                                             disabled={anyGenerating}
                                             title="重绘主图"
-                                            className="h-7 px-2 rounded-md border border-white/[0.12] text-[11px] text-neutral-300 hover:text-cyan-300 hover:border-cyan-400/40 disabled:opacity-40 flex items-center gap-1 transition-colors"
+                                            className="h-7 px-2 rounded-md border border-[#d9d9d9] text-[11px] text-[#4e5969] hover:text-[#4558dc] hover:border-[#4558dc] disabled:opacity-40 flex items-center gap-1 transition-colors"
                                         >
                                             {mainGenerating ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
                                             重绘
@@ -398,7 +398,7 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                             onClick={() => setConfirmDeleteMain(true)}
                                             disabled={anyGenerating}
                                             title="删除这张主图"
-                                            className="h-7 w-7 rounded-md border border-white/[0.12] text-neutral-400 hover:text-red-300 hover:border-red-400/40 disabled:opacity-40 flex items-center justify-center transition-colors"
+                                            className="h-7 w-7 rounded-md border border-[#d9d9d9] text-[#4e5969] hover:text-[#cf1322] hover:border-[#ffa39e] disabled:opacity-40 flex items-center justify-center transition-colors"
                                         >
                                             <Trash2 size={12} />
                                         </button>
@@ -413,8 +413,8 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                             key={look.id}
                                             className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 transition-colors ${
                                                 currentKey === look.id
-                                                    ? 'border-cyan-400/50 bg-cyan-400/[0.06]'
-                                                    : 'border-white/[0.06] bg-white/[0.02]'
+                                                    ? 'border-[#4558dc] bg-[#f5f6ff]'
+                                                    : 'border-[#eef0f6] bg-[#fafbff]'
                                             }`}
                                         >
                                             <button
@@ -422,22 +422,22 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                                     if (look.imageUrl) setCurrentKey(look.id);
                                                 }}
                                                 title={look.imageUrl ? '点击查看' : '暂无图片'}
-                                                className="w-9 h-9 rounded bg-[#0d0d12] overflow-hidden shrink-0 flex items-center justify-center cursor-pointer"
+                                                className="w-9 h-9 rounded bg-[#f2f3f5] overflow-hidden shrink-0 flex items-center justify-center cursor-pointer"
                                             >
                                                 {look.imageUrl ? (
                                                     <img src={look.imageUrl} alt="" className="w-full h-full object-cover" />
                                                 ) : (
-                                                    <span className="text-[10px] text-neutral-600">无图</span>
+                                                    <span className="text-[10px] text-[#9ca4b7]">无图</span>
                                                 )}
                                             </button>
                                             <span className="flex-1 min-w-0">
-                                                <span className="block text-[12px] text-neutral-300 truncate">{look.name}</span>
-                                                {isMain && <span className="block text-[10px] text-cyan-300/70">当前主图</span>}
+                                                <span className="block text-[12px] text-[#4e5969] truncate">{look.name}</span>
+                                                {isMain && <span className="block text-[10px] text-[#4558dc]/70">当前主图</span>}
                                             </span>
                                             <button
                                                 onClick={() => onGenerateLook(look.id, commitPatch())}
                                                 disabled={anyGenerating}
-                                                className="h-7 px-2 rounded-md border border-white/[0.12] text-[11px] text-neutral-300 hover:text-cyan-300 hover:border-cyan-400/40 disabled:opacity-40 flex items-center gap-1 transition-colors"
+                                                className="h-7 px-2 rounded-md border border-[#d9d9d9] text-[11px] text-[#4e5969] hover:text-[#4558dc] hover:border-[#4558dc] disabled:opacity-40 flex items-center gap-1 transition-colors"
                                             >
                                                 {lookBusy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
                                                 {look.imageUrl ? '重绘' : '生成'}
@@ -450,7 +450,7 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                                 }}
                                                 disabled={anyGenerating}
                                                 title="删除造型"
-                                                className="h-7 w-7 rounded-md border border-white/[0.12] text-neutral-400 hover:text-red-300 hover:border-red-400/40 disabled:opacity-40 flex items-center justify-center transition-colors"
+                                                className="h-7 w-7 rounded-md border border-[#d9d9d9] text-[#4e5969] hover:text-[#cf1322] hover:border-[#ffa39e] disabled:opacity-40 flex items-center justify-center transition-colors"
                                             >
                                                 <Trash2 size={12} />
                                             </button>
@@ -464,8 +464,8 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                         {isCharacter && (
                             <div>
                                 <div className="flex items-center justify-between mb-1.5">
-                                    <span className="text-[12px] text-neutral-400">视觉特征</span>
-                                    <span className="text-[11px] text-neutral-600">{draftVisual.length}/1000</span>
+                                    <span className="text-[12px] text-[#4e5969]">视觉特征</span>
+                                    <span className="text-[11px] text-[#9ca4b7]">{draftVisual.length}/1000</span>
                                 </div>
                                 <textarea
                                     value={draftVisual}
@@ -473,9 +473,9 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                     onBlur={() => onSave(commitPatch())}
                                     rows={4}
                                     placeholder="只写外貌：年龄段、体型、五官、肤色、发型、服装、气质。不要写剧情"
-                                    className="w-full rounded-lg bg-white/[0.06] border border-white/[0.08] px-3 py-2 text-[13px] leading-relaxed text-neutral-100 outline-none focus:border-cyan-400/50 resize-none"
+                                    className="w-full rounded-lg bg-[#fafbff] border border-[#e9ebf2] px-3 py-2 text-[13px] leading-relaxed text-[#1d2129] outline-none focus:border-[#4558dc] resize-none"
                                 />
-                                <p className="mt-1 text-[11px] leading-relaxed text-neutral-600">
+                                <p className="mt-1 text-[11px] leading-relaxed text-[#9ca4b7]">
                                     这一段会直接拼进生图提示词，请只描述画面上能看见的特征。
                                 </p>
                             </div>
@@ -484,10 +484,10 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                         {/* 描述 / 提示词 */}
                         <div>
                             <div className="flex items-center justify-between mb-1.5">
-                                <span className="text-[12px] text-neutral-400">
+                                <span className="text-[12px] text-[#4e5969]">
                                     {isCharacter ? '一句话描述' : '描述 / 提示词补充'}
                                 </span>
-                                <span className="text-[11px] text-neutral-600">{draftDesc.length}/3000</span>
+                                <span className="text-[11px] text-[#9ca4b7]">{draftDesc.length}/3000</span>
                             </div>
                             <textarea
                                 value={draftDesc}
@@ -497,15 +497,15 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                 placeholder={isCharacter
                                     ? '身份 / 外貌的一句话概括，如「40岁打渔女，皮肤黝黑，神情疲惫而倔强」'
                                     : '补充该资产的外观、气质、关键特征，用于生成与重绘'}
-                                className="w-full rounded-lg bg-white/[0.06] border border-white/[0.08] px-3 py-2 text-[13px] text-neutral-100 outline-none focus:border-cyan-400/50 resize-none"
+                                className="w-full rounded-lg bg-[#fafbff] border border-[#e9ebf2] px-3 py-2 text-[13px] text-[#1d2129] outline-none focus:border-[#4558dc] resize-none"
                             />
 
                             {/* 完整提示词预览 */}
-                            <div className="mt-2 rounded-lg border border-white/[0.08] bg-white/[0.02]">
+                            <div className="mt-2 rounded-lg border border-[#e9ebf2] bg-[#fafbff]">
                                 <div className="flex items-center justify-between px-2.5 py-2">
                                     <button
                                         onClick={() => setShowPrompt((v) => !v)}
-                                        className="flex items-center gap-1.5 text-[12px] text-neutral-400 hover:text-neutral-200 transition-colors"
+                                        className="flex items-center gap-1.5 text-[12px] text-[#4e5969] hover:text-[#1d2129] transition-colors"
                                     >
                                         <ChevronDown
                                             size={13}
@@ -516,13 +516,13 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                     <button
                                         onClick={handleCopyPrompt}
                                         title="复制提示词"
-                                        className="h-6 w-6 rounded text-neutral-500 hover:text-cyan-300 hover:bg-white/[0.06] flex items-center justify-center transition-colors"
+                                        className="h-6 w-6 rounded text-[#86909c] hover:text-[#4558dc] hover:bg-[#f2f3f5] flex items-center justify-center transition-colors"
                                     >
-                                        {copied ? <Check size={13} className="text-cyan-300" /> : <Copy size={13} />}
+                                        {copied ? <Check size={13} className="text-[#4558dc]" /> : <Copy size={13} />}
                                     </button>
                                 </div>
                                 {showPrompt && (
-                                    <p className="px-2.5 pb-2 text-[12px] leading-relaxed text-neutral-500 whitespace-pre-wrap">
+                                    <p className="px-2.5 pb-2 text-[12px] leading-relaxed text-[#86909c] whitespace-pre-wrap">
                                         {promptText}
                                     </p>
                                 )}
@@ -531,7 +531,7 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                     </div>
 
                     {/* 底部：生成参数 + 生成 */}
-                    <div className="shrink-0 border-t border-white/[0.06] px-4 py-3 space-y-2.5">
+                    <div className="shrink-0 border-t border-[#eef0f6] px-4 py-3 space-y-2.5">
                         <div className="flex items-center gap-2">
                             <MiniSelect
                                 value={imageModel}
@@ -544,12 +544,12 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                                 options={resolutionOptions}
                                 onChange={onResolutionChange}
                             />
-                            <span className="ml-auto text-[11px] text-neutral-500">{ASSET_ASPECT_LABEL}</span>
+                            <span className="ml-auto text-[11px] text-[#86909c]">{ASSET_ASPECT_LABEL}</span>
                         </div>
                         <button
                             onClick={() => onGenerate(commitPatch())}
                             disabled={anyGenerating}
-                            className="w-full h-10 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed text-[13px] font-medium text-[#04231f] flex items-center justify-center gap-1.5 transition-colors"
+                            className="w-full h-10 rounded-lg bg-[#4558dc] hover:bg-[#5c6fe4] disabled:opacity-50 disabled:cursor-not-allowed text-[13px] font-medium text-white flex items-center justify-center gap-1.5 transition-colors"
                         >
                             {mainGenerating ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
                             {asset.imageUrl ? '重新生成主图' : '生成主图'}
@@ -558,7 +558,7 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
 
                     {/* 角色专属提示 */}
                     {isCharacter && (
-                        <div className="shrink-0 px-4 pb-3 -mt-1 text-[11px] leading-relaxed text-neutral-600">
+                        <div className="shrink-0 px-4 pb-3 -mt-1 text-[11px] leading-relaxed text-[#9ca4b7]">
                             角色图固定横版 {ASSET_ASPECT_LABEL}，左侧生成「正脸 / 侧脸头肩特写」，右侧生成「无头身体三视图（正面 / 侧面 / 背面）」，不含道具与配饰，道具请到「道具」分类生成。
                         </div>
                     )}
@@ -572,17 +572,17 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                     onClick={() => setConfirmDeleteLook(null)}
                 >
                     <div
-                        className="w-[360px] rounded-2xl border border-white/10 bg-[#1a1a22] p-5 shadow-2xl"
+                        className="w-[360px] rounded-2xl border border-[#e9ebf2] bg-white p-5 shadow-[0_8px_28px_rgba(33,43,83,0.16)]"
                         onClick={(e) => e.stopPropagation()}
                     >
-                        <h3 className="text-[15px] font-semibold text-neutral-100 mb-2">删除造型</h3>
-                        <p className="text-[13px] text-neutral-400 leading-relaxed mb-5">
+                        <h3 className="text-[15px] font-semibold text-[#1d2129] mb-2">删除造型</h3>
+                        <p className="text-[13px] text-[#4e5969] leading-relaxed mb-5">
                             确定删除「{confirmDeleteLook.name}」吗？该造型已生成的图片将一并删除，且不可恢复。
                         </p>
                         <div className="flex justify-end gap-2">
                             <button
                                 onClick={() => setConfirmDeleteLook(null)}
-                                className="h-9 px-4 rounded-lg border border-white/[0.12] text-[13px] text-neutral-300 hover:bg-white/[0.06] transition-colors"
+                                className="h-9 px-4 rounded-lg border border-[#d9d9d9] text-[13px] text-[#4e5969] hover:bg-[#f2f3f5] transition-colors"
                             >
                                 取消
                             </button>
@@ -608,17 +608,17 @@ export const AssetDetailDrawer: React.FC<AssetDetailDrawerProps> = ({
                     onClick={() => setConfirmDeleteMain(false)}
                 >
                     <div
-                        className="w-[360px] rounded-2xl border border-white/10 bg-[#1a1a22] p-5 shadow-2xl"
+                        className="w-[360px] rounded-2xl border border-[#e9ebf2] bg-white p-5 shadow-[0_8px_28px_rgba(33,43,83,0.16)]"
                         onClick={(e) => e.stopPropagation()}
                     >
-                        <h3 className="text-[15px] font-semibold text-neutral-100 mb-2">删除主图</h3>
-                        <p className="text-[13px] text-neutral-400 leading-relaxed mb-5">
+                        <h3 className="text-[15px] font-semibold text-[#1d2129] mb-2">删除主图</h3>
+                        <p className="text-[13px] text-[#4e5969] leading-relaxed mb-5">
                             这张主图不属于任何造型，删除后不可恢复。造型中的图片不受影响。
                         </p>
                         <div className="flex justify-end gap-2">
                             <button
                                 onClick={() => setConfirmDeleteMain(false)}
-                                className="h-9 px-4 rounded-lg border border-white/[0.12] text-[13px] text-neutral-300 hover:bg-white/[0.06] transition-colors"
+                                className="h-9 px-4 rounded-lg border border-[#d9d9d9] text-[13px] text-[#4e5969] hover:bg-[#f2f3f5] transition-colors"
                             >
                                 取消
                             </button>
@@ -663,13 +663,13 @@ const MiniSelect: React.FC<{
         <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
             <button
                 onClick={() => setOpen((v) => !v)}
-                className="h-8 px-2.5 rounded-lg bg-white/[0.06] border border-white/[0.08] text-[12px] text-neutral-300 hover:border-white/[0.2] flex items-center gap-1 transition-colors"
+                className="h-8 px-2.5 rounded-lg bg-[#fafbff] border border-[#e9ebf2] text-[12px] text-[#4e5969] hover:border-[#4558dc] flex items-center gap-1 transition-colors"
             >
                 <span className="truncate max-w-[140px]">{current}</span>
-                <ChevronDown size={12} className="shrink-0 text-neutral-500" />
+                <ChevronDown size={12} className="shrink-0 text-[#86909c]" />
             </button>
             {open && (
-                <div className="absolute left-0 bottom-full mb-1 z-30 w-48 rounded-lg border border-white/[0.1] bg-[#1b1b22] shadow-xl py-1 max-h-56 overflow-y-auto">
+                <div className="absolute left-0 bottom-full mb-1 z-30 w-48 rounded-lg border border-[#d9d9d9] bg-white shadow-xl py-1 max-h-56 overflow-y-auto">
                     {options.map((o, i) => (
                         <button
                             key={o}
@@ -677,8 +677,8 @@ const MiniSelect: React.FC<{
                                 onChange(o);
                                 setOpen(false);
                             }}
-                            className={`w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-white/[0.07] ${
-                                o === value ? 'text-cyan-300' : 'text-neutral-300'
+                            className={`w-full text-left px-2.5 py-1.5 text-[12px] hover:bg-[#f5f6ff] ${
+                                o === value ? 'text-[#4558dc]' : 'text-[#4e5969]'
                             }`}
                         >
                             {labels ? labels[i] : o}

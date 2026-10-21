@@ -16,11 +16,27 @@ import crypto from 'crypto';
 import { ASSETS_DIR as LIBRARY_ASSETS_DIR, IMAGES_DIR, VIDEOS_DIR } from '../utils/paths.js';
 import { readJson, updateJson } from '../utils/jsonStore.js';
 import { resolveInside } from '../utils/safePath.js';
+import { isDbEnabled, isDualWrite, exec, many, one } from '../db/index.js';
 
 const router = express.Router();
 
 /** 素材索引文件 */
 const libraryJsonPath = path.join(LIBRARY_ASSETS_DIR, 'assets.json');
+
+const iso = (value) => (value instanceof Date ? value.toISOString() : value || null);
+
+/** 数据库行 → 前端素材对象 */
+function rowToLibraryAsset(row) {
+    return {
+        ...(row.meta || {}),
+        id: row.id,
+        name: row.name,
+        category: row.category,
+        url: row.url,
+        type: row.type,
+        createdAt: iso(row.created_at),
+    };
+}
 
 /**
  * 生成不重名的目标文件名。
@@ -144,11 +160,38 @@ router.post('/', async (req, res) => {
             ...meta
         };
 
-        await updateJson(libraryJsonPath, (current) => {
-            const list = Array.isArray(current) ? current : [];
-            list.push(newEntry);
-            return list;
-        }, []);
+        // 索引入库（media 文件仍在 library/assets/<category>/）
+        if (isDbEnabled()) {
+            await exec(
+                `INSERT INTO library_assets (id, name, category, url, type, meta, created_at)
+                 VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)
+                 ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    category = EXCLUDED.category,
+                    url = EXCLUDED.url,
+                    type = EXCLUDED.type,
+                    meta = EXCLUDED.meta,
+                    created_at = EXCLUDED.created_at`,
+                [
+                    newEntry.id,
+                    newEntry.name,
+                    newEntry.category,
+                    newEntry.url,
+                    newEntry.type,
+                    JSON.stringify(meta && typeof meta === 'object' ? meta : {}),
+                    newEntry.createdAt,
+                ],
+            );
+        }
+
+        // dual 模式保留文件索引
+        if (!isDbEnabled() || isDualWrite()) {
+            await updateJson(libraryJsonPath, (current) => {
+                const list = Array.isArray(current) ? current : [];
+                list.push(newEntry);
+                return list;
+            }, []);
+        }
 
         res.json({ success: true, asset: newEntry });
     } catch (error) {
@@ -160,6 +203,11 @@ router.post('/', async (req, res) => {
 // List library assets
 router.get('/', async (req, res) => {
     try {
+        if (isDbEnabled()) {
+            const rows = await many('SELECT * FROM library_assets ORDER BY created_at DESC NULLS LAST');
+            return res.json(rows.map(rowToLibraryAsset));
+        }
+
         const libraryData = readJson(libraryJsonPath, []);
         // Sort newest first
         libraryData.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
@@ -174,16 +222,24 @@ router.get('/', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id));
 
-        if (!fs.existsSync(libraryJsonPath)) {
-            return res.status(404).json({ error: "Library not found" });
-        }
+        let asset = null;
 
-        const libraryData = readJson(libraryJsonPath, []);
-        const asset = libraryData.find(a => a.id === id);
-
-        if (!asset) {
-            return res.status(404).json({ error: "Asset not found" });
+        if (isDbEnabled()) {
+            if (!isUuid) return res.status(404).json({ error: 'Asset not found' });
+            const row = await one('SELECT * FROM library_assets WHERE id = $1', [id]);
+            if (row) asset = rowToLibraryAsset(row);
+            if (!asset) return res.status(404).json({ error: 'Asset not found' });
+        } else {
+            if (!fs.existsSync(libraryJsonPath)) {
+                return res.status(404).json({ error: "Library not found" });
+            }
+            const libraryData = readJson(libraryJsonPath, []);
+            asset = libraryData.find(a => a.id === id);
+            if (!asset) {
+                return res.status(404).json({ error: "Asset not found" });
+            }
         }
 
         // Delete the actual file if it exists in our assets folder
@@ -196,11 +252,19 @@ router.delete('/:id', async (req, res) => {
             }
         }
 
-        // Remove from array（串行化写入，避免与并发保存互相覆盖）
-        await updateJson(libraryJsonPath, (current) => {
-            const list = Array.isArray(current) ? current : [];
-            return list.filter(a => a.id !== id);
-        }, []);
+        if (isDbEnabled()) {
+            await exec('DELETE FROM library_assets WHERE id = $1', [id]);
+        }
+
+        // dual 模式同步删除文件索引（串行化写入，避免与并发保存互相覆盖）
+        if (!isDbEnabled() || isDualWrite()) {
+            if (fs.existsSync(libraryJsonPath)) {
+                await updateJson(libraryJsonPath, (current) => {
+                    const list = Array.isArray(current) ? current : [];
+                    return list.filter(a => a.id !== id);
+                }, []);
+            }
+        }
 
         res.json({ success: true });
     } catch (error) {

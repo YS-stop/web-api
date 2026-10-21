@@ -98,6 +98,10 @@ export const useGeneration = ({
      */
     const waitForSeedanceTask = async (taskId: string, nodeId: string): Promise<string> => {
         const deadline = Date.now() + 11 * 60 * 1000;
+        // 连续查询失败容忍次数：后端重启时任务会被 restore 继续跑，短暂不可达属正常，
+        // 但持续不可达说明连接已断，必须尽快报错，不能让节点一直转圈到 11 分钟超时。
+        const MAX_CONSECUTIVE_FAILURES = 3;
+        let consecutiveFailures = 0;
 
         while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, 5000));
@@ -105,10 +109,20 @@ export const useGeneration = ({
             let status;
             try {
                 status = await getVideoTaskStatus(taskId);
+                consecutiveFailures = 0;
             } catch {
                 // 任务不存在/查询失败：看看服务端有没有已经落盘的结果
                 const fallback = await getGenerationStatus(nodeId).catch(() => null);
                 if (fallback?.status === 'success' && fallback.resultUrl) return fallback.resultUrl;
+                // 服务端已明确失败：立即收尾，不必等超时
+                if (fallback?.status === 'failed') {
+                    throw new Error(fallback.error || '视频生成失败');
+                }
+
+                consecutiveFailures += 1;
+                if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                    throw new Error('与生成服务的连接已中断（后端可能已重启），请确认服务恢复后重新生成');
+                }
                 continue;
             }
 

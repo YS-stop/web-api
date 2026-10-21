@@ -29,14 +29,37 @@ import {
     submitChangeRequest,
     updateProject,
 } from '../services/projectService';
+import { persistUiState } from '../services/projectStateService';
+import {
+    fetchProjectJobs,
+    isJobAbnormal,
+    describeJob,
+    retryJob,
+    JOB_KIND_META,
+} from '../services/generationTaskService';
+import type { ProjectJob } from '../services/generationTaskService';
 import { ChangeRequestModal } from './modals/ChangeRequestModal';
+import { AssetConfirmPanel } from './AssetConfirmPanel';
+import type { EpisodeMap } from './AssetConfirmPanel';
+import { loadAssetStore } from './AssetConfirmPanel';
+import {
+    deriveEpisodeStatuses,
+    deriveProjectStats,
+    formatDuration,
+    formatRelativeTime,
+    STAGE_LABEL,
+} from '../services/episodeStatus';
+import type { EpisodeStatus, ProjectStats } from '../services/episodeStatus';
 
 interface ProjectDetailPageProps {
     projectId: string;
-    user: { name?: string; avatarUrl?: string; role?: string } | null;
+    /** id 用于判断任务是否为「我」触发的（任务台账里的 created_by 是用户 id） */
+    user: { id?: string; name?: string; avatarUrl?: string; role?: string } | null;
     onBack: () => void;
     /** 进入画布：带上集号，画布直接定位到该集 */
     onEnterWorkflow?: (projectId: string, episode?: number) => void;
+    /** 初始激活的标签页（如工作流页跳转过来时直达「项目资产」） */
+    initialTab?: string;
 }
 
 type DetailTabKey = 'overview' | 'episodes' | 'assets' | 'tasks' | 'versions' | 'reviews' | 'settings';
@@ -83,61 +106,14 @@ const buildSettingsForm = (project: Project | null): SettingsForm => ({
     generationService: GENERATION_SERVICES[0],
 });
 
-/** 详情页查看态使用静态演示数据，保证页面视觉与参考稿一致 */
-const MOCK_PROJECT = {
-    name: '长夜微光 AI 短剧制作',
-    status: '制作中',
-    summary: '长夜微光 · 真人短剧 · 锁定剧本 长夜微光·分集定稿 V3',
-    code: 'XM-P-24091',
-    owner: '林雪琪',
-    department: '短剧制作部',
-    updatedAt: '8分钟前',
-    progress: 23,
-};
-
 const DETAIL_TABS: { key: DetailTabKey; label: string; count?: number; dot?: boolean }[] = [
     { key: 'overview', label: '项目概览' },
-    { key: 'episodes', label: '分集管理', count: 80 },
+    { key: 'episodes', label: '分集管理' },
     { key: 'assets', label: '项目资产' },
     { key: 'tasks', label: '生成任务', dot: true },
     { key: 'versions', label: '版本记录' },
     { key: 'reviews', label: '审核记录' },
     { key: 'settings', label: '项目设置' },
-];
-
-const FLOW_STEPS = [
-    { title: '剧本锁定', detail: 'V3 已锁定', state: 'done', number: 1 },
-    { title: '解析与资产', detail: '80 集已解析', state: 'done', number: 2 },
-    { title: '分镜生产', detail: '24 集已完成', state: 'active', number: 3 },
-    { title: '镜头视频', detail: '18 集生产中', state: 'active', number: 4 },
-    { title: '整集成片', detail: '12 集已通过', state: 'pending', number: 5 },
-] as const;
-
-const FLOW_LINES = ['bg-[#a9e7bf]', 'bg-[#a9e7bf]', 'bg-[#d4d1fb]', 'bg-[#e8eaf1]'];
-
-const PRODUCTION_STATS = [
-    { label: '解析完成', value: '80 / 80 集' },
-    { label: '分镜完成', value: '24 / 80 集' },
-    { label: '视频完成', value: '18 / 80 集' },
-    { label: '成片通过', value: '12 / 80 集' },
-];
-
-const PENDING_TASKS = [
-    { title: '第04集分镜待复审', meta: '周主编 · 16分钟前', color: '#ff9f1c' },
-    { title: '3个异常镜头待重试', meta: '系统任务 · 32分钟前', color: '#ff4d4f' },
-    { title: '角色“陈远”待确认', meta: '资产审核 · 今天 09:42', color: '#1677ff' },
-];
-
-const RECENT_EPISODES = [
-    { episode: '第 01 集', title: '雨夜重逢', stage: '镜头生成中', stageClass: 'bg-[#e8f2ff] text-[#2f74ff]', updated: '8分钟前' },
-    { episode: '第 02 集', title: '被隐藏的来电', stage: '成片审核', stageClass: 'bg-[#f5eaff] text-[#8b5cf6]', updated: '今天 10:08' },
-];
-
-const ACTIVITIES = [
-    { title: '第01集镜头18生成完成', meta: '火山引擎 · V2.10 · 8分钟前', color: '#2f6bff' },
-    { title: '第04集分镜被退回', meta: '人物服装连续性需调整 · 18分钟前', color: '#f5a623' },
-    { title: '第03集成片审核通过', meta: '周主编 · 昨天 18:42', color: '#00b42a' },
-    { title: '剧本解析完成', meta: '共识别80集、642场 · 09-23 10:26', color: '#2f6bff' },
 ];
 
 type EpisodeBadgeTone = 'gray' | 'yellow' | 'green' | 'blue' | 'purple' | 'orange' | 'cyan';
@@ -156,6 +132,7 @@ interface EpisodeRecord {
     stage: string;
     stageTone: EpisodeBadgeTone;
     review: string;
+    reviewTone: EpisodeBadgeTone;
     updated: string;
 }
 
@@ -175,14 +152,6 @@ const EPISODE_BADGE_TONES: Record<EpisodeBadgeTone, string> = {
     cyan: 'bg-[#e6faf7] text-[#10b5a7]',
 };
 
-const EPISODE_STATS = [
-    { label: '总集数', value: '80', color: 'text-[#1c2745]' },
-    { label: '生产中', value: '26', color: 'text-[#ff7d00]' },
-    { label: '待审核', value: '14', color: 'text-[#ff9f1c]' },
-    { label: '已完成', value: '12', color: 'text-[#00b42a]' },
-    { label: '异常镜头', value: '3', color: 'text-[#ff4d4f]' },
-];
-
 const EPISODE_STAGE_OPTIONS = ['全部阶段', '镜头生成中', '成片审核', '已完成', '分镜审核', '资产确认', '单集分析完成', '待初始化'];
 const EPISODE_REVIEW_OPTIONS = ['全部审核状态', '分镜已通过', '待成片审核', '全部通过', '有修改意见', '待审核', '待确认', '未提交'];
 
@@ -192,179 +161,51 @@ const EMPTY_EPISODE_FILTERS: EpisodeFilters = {
     review: '全部审核状态',
 };
 
-const EPISODE_RECORDS: EpisodeRecord[] = [
-    {
-        id: '01',
-        title: '雨夜重逢',
-        detail: '2,646 字 · 01:32',
-        assets: '5 / 8 / 12',
-        assetKinds: '角色 / 场景 / 道具',
-        storyboard: '24 / 24',
-        video: '18 / 24 · 2异常',
-        videoAlert: true,
-        final: '待生成',
-        finalTone: 'gray',
-        stage: '镜头生成中',
-        stageTone: 'blue',
-        review: '分镜已通过',
-        updated: '8分钟前',
-    },
-    {
-        id: '02',
-        title: '被隐藏的来电',
-        detail: '2,630 字 · 01:26',
-        assets: '4 / 6 / 9',
-        assetKinds: '角色 / 场景 / 道具',
-        storyboard: '22 / 22',
-        video: '22 / 22',
-        final: '待审核',
-        finalTone: 'yellow',
-        stage: '成片审核',
-        stageTone: 'purple',
-        review: '待成片审核',
-        updated: '今天 10:08',
-    },
-    {
-        id: '03',
-        title: '身份裂缝',
-        detail: '3,012 字 · 01:38',
-        assets: '6 / 7 / 14',
-        assetKinds: '角色 / 场景 / 道具',
-        storyboard: '26 / 26',
-        video: '26 / 26',
-        final: '已完成',
-        finalTone: 'green',
-        stage: '已完成',
-        stageTone: 'green',
-        review: '全部通过',
-        updated: '昨天 18:42',
-    },
-    {
-        id: '04',
-        title: '旧案线索',
-        detail: '2,780 字 · 01:29',
-        assets: '5 / 9 / 11',
-        assetKinds: '角色 / 场景 / 道具',
-        storyboard: '19 / 23',
-        video: '0 / 23 · 1异常',
-        videoAlert: true,
-        final: '未开始',
-        finalTone: 'gray',
-        stage: '分镜审核',
-        stageTone: 'orange',
-        review: '有修改意见',
-        updated: '昨天 16:18',
-    },
-    {
-        id: '05',
-        title: '交换条件',
-        detail: '2,519 字 · 01:21',
-        assets: '4 / 5 / 8',
-        assetKinds: '角色 / 场景 / 道具',
-        storyboard: '0 / 21',
-        video: '0 / 21',
-        final: '未开始',
-        finalTone: 'gray',
-        stage: '资产确认',
-        stageTone: 'cyan',
-        review: '待审核',
-        updated: '09-23 14:20',
-    },
-    {
-        id: '06',
-        title: '追车',
-        detail: '2,926 字 · 01:35',
-        assets: '7 / 10 / 16',
-        assetKinds: '角色 / 场景 / 道具',
-        storyboard: '0 / 25',
-        video: '0 / 25',
-        final: '未开始',
-        finalTone: 'gray',
-        stage: '单集分析完成',
-        stageTone: 'blue',
-        review: '待确认',
-        updated: '09-23 11:06',
-    },
-    {
-        id: '07',
-        title: '证人的谎言',
-        detail: '2,712 字 · 01:28',
-        assets: '5 / 8 / 10',
-        assetKinds: '角色 / 场景 / 道具',
-        storyboard: '0 / 22',
-        video: '0 / 22',
-        final: '未开始',
-        finalTone: 'gray',
-        stage: '待初始化',
-        stageTone: 'gray',
-        review: '未提交',
-        updated: '09-22 18:30',
-    },
-];
+type TaskStatusTone = 'blue' | 'yellow' | 'green' | 'red';
 
-type TaskStatusTone = 'blue' | 'yellow' | 'green';
-
+/**
+ * 生成任务行：直接来自后端 project_jobs 台账（一次真实生成尝试 = 一行）。
+ * 之前这里是由逐集产物进度反推的「假任务」，失败与重试都没有落点；
+ * 现在保留 job 引用，日志与重试都落在真实任务上。
+ */
 interface GenerationTask {
     id: string;
     title: string;
     node: string;
     service: string;
-    progress: number;
+    /** 真实任务没有细粒度进度：运行中为 null，完成后为 100 */
+    progress: number | null;
     status: string;
     statusTone: TaskStatusTone;
-    cost: string;
-    trigger: string;
+    /** 该任务最近一次状态变化的相对时间 */
+    updatedAt: string;
     canRetry: boolean;
     abnormal: boolean;
+    /** 触发人快照：后端按 token 在任务创建时写入，之后不覆盖 */
+    actorId: string;
+    actorName: string;
+    actorRole: string;
+    /** 是否有可靠的触发人记录（005 迁移前的历史任务为空） */
+    actorKnown: boolean;
+    /** 是否由当前登录账号触发 */
+    isMe: boolean;
+    job: ProjectJob;
 }
+
+/** 角色标签：与用户管理页口径一致 */
+const ACTOR_ROLE_META: Record<string, { label: string; badge: string }> = {
+    admin: { label: '管理员', badge: 'bg-[#e8f1ff] text-[#1677ff]' },
+    project_manager: { label: '项目主管', badge: 'bg-[#eef6ff] text-[#0e6fff]' },
+    team_leader: { label: '组长', badge: 'bg-[#fff3e8] text-[#ff7d00]' },
+    user: { label: '组员', badge: 'bg-[#f2f3f5] text-[#86909c]' },
+};
 
 const TASK_STATUS_STYLES: Record<TaskStatusTone, string> = {
     blue: 'bg-[#e8f2ff] text-[#2f74ff]',
     yellow: 'bg-[#fff7e8] text-[#d98100]',
     green: 'bg-[#e8ffea] text-[#00b42a]',
+    red: 'bg-[#ffece8] text-[#f53f3f]',
 };
-
-const GENERATION_TASKS: GenerationTask[] = [
-    {
-        id: 'TASK-98316',
-        title: '第01集 · 镜头视频批量生成',
-        node: '镜头视频',
-        service: '火山引擎 Seedance',
-        progress: 78,
-        status: '运行中',
-        statusTone: 'blue',
-        cost: '¥36.20',
-        trigger: '系统',
-        canRetry: false,
-        abnormal: false,
-    },
-    {
-        id: 'TASK-98312',
-        title: '第04集 · 分镜重生成',
-        node: '分镜',
-        service: '火山引擎',
-        progress: 100,
-        status: '待审核',
-        statusTone: 'yellow',
-        cost: '¥1.32',
-        trigger: '林雪琪',
-        canRetry: true,
-        abnormal: false,
-    },
-    {
-        id: 'TASK-98297',
-        title: '全剧 · 角色资产解析',
-        node: '项目资产',
-        service: '剧情分析服务',
-        progress: 100,
-        status: '已完成',
-        statusTone: 'green',
-        cost: '¥18.60',
-        trigger: '系统',
-        canRetry: true,
-        abnormal: false,
-    },
-];
 
 type VersionStatusTone = 'green' | 'gray';
 
@@ -382,45 +223,6 @@ const VERSION_STATUS_STYLES: Record<VersionStatusTone, string> = {
     green: 'bg-[#e8ffea] text-[#00b42a]',
     gray: 'bg-[#f2f3f5] text-[#86909c]',
 };
-
-const VERSION_RECORDS: VersionRecord[] = [
-    {
-        object: '第04集 · 镜头脚本',
-        version: 'V6',
-        description: '基于 V5 修改服装连续性',
-        status: '当前使用',
-        statusTone: 'green',
-        creator: '林雪琪',
-        createdAt: '今天 10:24',
-    },
-    {
-        object: '角色 · 陈述',
-        version: 'V3',
-        description: '重新生成角色定妆',
-        status: '待选用',
-        statusTone: 'gray',
-        creator: '江云天',
-        createdAt: '今天 09:42',
-    },
-    {
-        object: '第03集 · 整集成片',
-        version: 'V4',
-        description: '调整字幕和片尾',
-        status: '当前使用',
-        statusTone: 'green',
-        creator: '林雪琪',
-        createdAt: '昨天 18:42',
-    },
-    {
-        object: '全剧剧本解析',
-        version: 'V3',
-        description: '确认最终拆集版本',
-        status: '已锁定',
-        statusTone: 'green',
-        creator: '林雪琪',
-        createdAt: '09-23 10:26',
-    },
-];
 
 type ReviewResultTone = 'yellow' | 'green';
 
@@ -440,125 +242,16 @@ const REVIEW_RESULT_STYLES: Record<ReviewResultTone, string> = {
     green: 'bg-[#e8ffea] text-[#00b42a]',
 };
 
-const REVIEW_RECORDS: ReviewRecord[] = [
-    {
-        object: '第04集 · 镜头脚本',
-        version: 'V6',
-        node: '分镜审核',
-        scope: '内容制作部 / 分镜审核角色',
-        result: '待复审',
-        resultTone: 'yellow',
-        submitter: '林雪琪',
-        createdAt: '今天 10:24',
-    },
-    {
-        object: '角色 · 陈述',
-        version: 'V3',
-        node: '资产审核',
-        scope: '美术部 / 资产审核角色',
-        result: '待审核',
-        resultTone: 'yellow',
-        submitter: '江云天',
-        createdAt: '今天 09:42',
-    },
-    {
-        object: '第03集 · 整集成片',
-        version: 'V4',
-        node: '成片审核',
-        scope: '内容部 / 成片审核角色',
-        result: '已通过',
-        resultTone: 'green',
-        submitter: '林雪琪',
-        createdAt: '昨天 18:42',
-    },
-    {
-        object: '全剧剧本解析',
-        version: 'V3',
-        node: '解析确认',
-        scope: '内容部 / 剧本审核角色',
-        result: '已通过',
-        resultTone: 'green',
-        submitter: '系统',
-        createdAt: '09-23 10:26',
-    },
-];
-
-type AssetStatusTone = 'green' | 'yellow';
-
-interface SharedAsset {
-    id: string;
-    name: string;
-    initial: string;
-    role: string;
-    referenceCount: number;
-    meta: string;
-    status: string;
-    statusTone: AssetStatusTone;
-    gradient: string;
-}
-
-const ASSET_STATUS_STYLES: Record<AssetStatusTone, string> = {
-    green: 'text-[#00b42a]',
-    yellow: 'text-[#d98100]',
-};
-
-const SHARED_ASSETS: SharedAsset[] = [
-    {
-        id: 'asset-linxia',
-        name: '林夏',
-        initial: '林',
-        role: '女主角 · 18集引用',
-        referenceCount: 18,
-        meta: '当前版本 V2 · 项目内可复用 · 今日更新',
-        status: '已通过',
-        statusTone: 'green',
-        gradient: 'linear-gradient(135deg, #34415e 0%, #52617e 100%)',
-    },
-    {
-        id: 'asset-zhoucheng',
-        name: '周承',
-        initial: '周',
-        role: '男主角 · 16集引用',
-        referenceCount: 16,
-        meta: '当前版本 V3 · 项目内可复用 · 今日更新',
-        status: '已通过',
-        statusTone: 'green',
-        gradient: 'linear-gradient(135deg, #8c6d53 0%, #aa8569 100%)',
-    },
-    {
-        id: 'asset-chenshu',
-        name: '陈述',
-        initial: '陈',
-        role: '配角 · 9集引用',
-        referenceCount: 9,
-        meta: '当前版本 V4 · 项目内可复用 · 今日更新',
-        status: '待审核',
-        statusTone: 'yellow',
-        gradient: 'linear-gradient(135deg, #4f686b 0%, #6b8584 100%)',
-    },
-    {
-        id: 'asset-zhoumu',
-        name: '周母',
-        initial: '周',
-        role: '配角 · 6集引用',
-        referenceCount: 6,
-        meta: '当前版本 V5 · 项目内可复用 · 今日更新',
-        status: '已通过',
-        statusTone: 'green',
-        gradient: 'linear-gradient(135deg, #6a587a 0%, #8a7299 100%)',
-    },
-];
-
-const ASSET_CATEGORIES = ['角色', '场景', '道具'];
-const ASSET_STATUS_OPTIONS = ['全部审核状态', '已通过', '待审核'];
-const ASSET_SORT_OPTIONS = ['最近更新', '引用最多', '名称排序'];
-
 /** 项目详情子页面：视觉按参考稿重构，数据仅用于查看态静态展示 */
-export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId, user, onBack, onEnterWorkflow }) => {
+export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId, user, onBack, onEnterWorkflow, initialTab }) => {
     const [project, setProject] = useState<Project | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState('');
-    const [activeTab, setActiveTab] = useState<DetailTabKey>('episodes');
+    /** 合法的详情标签集合，用于校验 URL 传入的 tab */
+    const resolvedInitialTab: DetailTabKey = DETAIL_TABS.some((t) => t.key === initialTab)
+        ? (initialTab as DetailTabKey)
+        : 'episodes';
+    const [activeTab, setActiveTab] = useState<DetailTabKey>(resolvedInitialTab);
     const [settingsForm, setSettingsForm] = useState<SettingsForm>(() => ({ ...EMPTY_SETTINGS }));
     const [settingsSaving, setSettingsSaving] = useState(false);
     const [settingsError, setSettingsError] = useState('');
@@ -568,12 +261,24 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
     const [appliedEpisodeFilters, setAppliedEpisodeFilters] = useState<EpisodeFilters>(() => ({ ...EMPTY_EPISODE_FILTERS }));
     const [selectedEpisodes, setSelectedEpisodes] = useState<string[]>([]);
     const [tasksAbnormalOnly, setTasksAbnormalOnly] = useState(false);
-    const [assetCategory, setAssetCategory] = useState('角色');
-    const [assetSearch, setAssetSearch] = useState('');
-    const [assetStatusFilter, setAssetStatusFilter] = useState('全部审核状态');
-    const [assetSort, setAssetSort] = useState('最近更新');
+    /**
+     * 任务按人筛选：'all' 全部 / 'me' 仅我 / 'id:<userId>' 指定人。
+     * 同组多人共用同一批项目，靠触发人区分每条任务是谁发起的。
+     */
+    const [tasksActorFilter, setTasksActorFilter] = useState('all');
     const [showChangeRequest, setShowChangeRequest] = useState(false);
     const [toast, setToast] = useState('');
+    /** 生成任务台账（后端 project_jobs）：进入详情页即拉一次，用于顶部异常红点 */
+    const [projectJobs, setProjectJobs] = useState<ProjectJob[]>([]);
+    const [jobsLoading, setJobsLoading] = useState(false);
+    const [jobsError, setJobsError] = useState('');
+    /** 展开「日志」的任务 id（展示发起参数与失败原因） */
+    const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+    /**
+     * 本地数据变更令牌：资产确认 / 分镜视频都写在 localStorage，
+     * 面板改动后自增该值，触发逐集状态与各标签统计重新推导。
+     */
+    const [assetRefreshToken, setAssetRefreshToken] = useState(0);
 
     const canEdit = canEditProject(user?.role);
     const canRequest = canRequestChange(user?.role);
@@ -581,7 +286,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
     const loadProject = async () => {
         setLoading(true);
         setLoadError('');
-        setActiveTab('episodes');
+        setActiveTab(resolvedInitialTab);
         setSettingsForm({ ...EMPTY_SETTINGS });
         try {
             const data = await fetchProject(projectId);
@@ -598,7 +303,8 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
         let cancelled = false;
         setLoading(true);
         setLoadError('');
-        setActiveTab('episodes');
+        // 切项目时回到该次进入指定的标签（默认分集管理），避免沿用上一个项目停留的标签
+        setActiveTab(resolvedInitialTab);
         setSettingsForm({ ...EMPTY_SETTINGS });
         fetchProject(projectId)
             .then((data) => {
@@ -623,6 +329,45 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
         const timer = window.setTimeout(() => setToast(''), 2500);
         return () => window.clearTimeout(timer);
     }, [toast]);
+
+    /**
+     * 刷新任务台账。
+     * 任务由生成侧写入（提交时 running，结束时补终态），这里只读不推导，
+     * 避免又回到「用产物进度反推出看起来像任务」的老路。
+     */
+    const refreshJobs = React.useCallback(async () => {
+        setJobsLoading(true);
+        setJobsError('');
+        try {
+            setProjectJobs(await fetchProjectJobs(projectId));
+        } catch (error: any) {
+            setJobsError(error?.message || '加载生成任务失败');
+            setProjectJobs([]);
+        } finally {
+            setJobsLoading(false);
+        }
+    }, [projectId]);
+
+    // 进入详情页拉一次：顶部「生成任务」红点依赖它
+    useEffect(() => {
+        void refreshJobs();
+    }, [refreshJobs]);
+
+    // 切到「生成任务」时再拉一次：任务可能在别的页面刚刚结束
+    useEffect(() => {
+        if (activeTab === 'tasks') void refreshJobs();
+    }, [activeTab, refreshJobs]);
+
+    // 有运行中的任务时低频轮询，结束后自动变成终态，不必手动点刷新
+    const hasRunningJob = useMemo(
+        () => projectJobs.some((job) => job.status === 'running'),
+        [projectJobs],
+    );
+    useEffect(() => {
+        if (activeTab !== 'tasks' || !hasRunningJob) return;
+        const timer = window.setInterval(() => void refreshJobs(), 10000);
+        return () => window.clearInterval(timer);
+    }, [activeTab, hasRunningJob, refreshJobs]);
 
     const setSettingsField = (key: keyof SettingsForm, value: string) => {
         setSettingsForm((prev) => ({ ...prev, [key]: value }));
@@ -676,6 +421,8 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
         } catch {
             /* 忽略浏览器存储不可用 */
         }
+        persistUiState(projectId, 'project-started', '1');
+        if (episode) persistUiState(projectId, 'active-episode', episode);
         onEnterWorkflow?.(projectId, episode);
     };
 
@@ -683,40 +430,55 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
         current && !options.includes(current) ? [current, ...options] : options;
 
     /**
-     * 分集列表：优先用项目真实的剧本解析结果。
-     * 之前这里直接用写死的 EPISODE_RECORDS，导致点进项目看到的永远是
-     * 演示的「第 01 集 雨夜重逢」，与该项目实际的分集对不上。
+     * 逐集制作状态：由「剧本解析 + 资产确认 + 分镜/视频」真实数据推导。
+     *
+     * 之前这里的分镜 / 镜头视频 / 成片 / 当前阶段 / 审核状态全是占位符（—、待制作），
+     * 顶部统计（总集数 80、生产中 26…）也是写死的演示值，与实际进度无关。
+     * 现在统一走 episodeStatus 派生层，分集表逐行、各标签统计都取自同一份数据。
      */
-    const episodeRecords = useMemo<EpisodeRecord[]>(() => {
+    const episodeStatuses = useMemo<EpisodeStatus[]>(() => {
         const list = project?.scriptAnalysis?.episodes || [];
-        if (list.length === 0) return EPISODE_RECORDS;
-        return list.map((ep) => {
-            const assets = ep.assets;
-            const countOf = (k: 'characters' | 'scenes' | 'props') => assets?.[k]?.length ?? 0;
-            const chars = countOf('characters');
-            const scenes = countOf('scenes');
-            const props = countOf('props');
-            const total = chars + scenes + props;
-            const sec = Math.max(0, Math.round(ep.durationSeconds || 0));
-            const mm = String(Math.floor(sec / 60)).padStart(2, '0');
-            const ss = String(sec % 60).padStart(2, '0');
-            return {
-                id: String(ep.episode).padStart(2, '0'),
-                title: ep.title || `第 ${ep.episode} 集`,
-                detail: `${(ep.wordCount || 0).toLocaleString()} 字 · ${mm}:${ss}`,
-                assets: total > 0 ? `${chars} / ${scenes} / ${props}` : '未识别',
-                assetKinds: total > 0 ? '角色 / 场景 / 道具' : '待识别',
-                storyboard: '—',
-                video: '—',
-                final: '未开始',
-                finalTone: 'gray',
-                stage: '待制作',
-                stageTone: 'gray',
-                review: '—',
-                updated: ep.content ? '已切分' : '—',
-            };
+        if (list.length === 0) return [];
+        return deriveEpisodeStatuses({
+            projectId,
+            episodes: list,
+            fallbackUpdatedAt: project?.updatedAt,
         });
-    }, [project]);
+    }, [project, projectId, assetRefreshToken]);
+
+    /** 全项目统计：直接由逐集状态相加，保证与分集表逐行一致 */
+    const projectStats = useMemo<ProjectStats>(
+        () => deriveProjectStats(episodeStatuses),
+        [episodeStatuses]
+    );
+
+    /** 分集表行数据 */
+    const episodeRecords = useMemo<EpisodeRecord[]>(
+        () => episodeStatuses.map((s) => ({
+            id: s.id,
+            title: s.title,
+            detail: `${s.wordCount.toLocaleString()} 字 · ${formatDuration(s.durationSeconds)}`,
+            assets: s.assetTotal > 0
+                ? `${s.assetCounts.characters} / ${s.assetCounts.scenes} / ${s.assetCounts.props}`
+                : '未识别',
+            assetKinds: s.assetTotal > 0
+                ? (s.assetGenerated > 0 ? `已出图 ${s.assetGenerated} / ${s.assetTotal}` : '角色 / 场景 / 道具')
+                : '待识别',
+            storyboard: s.shotTotal > 0 ? `${s.shotTotal} 个` : '未拆分',
+            video: s.shotTotal > 0
+                ? `${s.shotVideoDone} / ${s.shotTotal}${s.abnormal > 0 ? ` · ${s.abnormal}异常` : s.shotsGenerating > 0 ? ` · ${s.shotsGenerating}生成中` : ''}`
+                : '—',
+            videoAlert: s.abnormal > 0,
+            final: s.final,
+            finalTone: s.finalTone,
+            stage: s.stage,
+            stageTone: s.stageTone,
+            review: s.review,
+            reviewTone: s.reviewTone,
+            updated: formatRelativeTime(s.updatedAt),
+        })),
+        [episodeStatuses]
+    );
 
     const visibleEpisodes = episodeRecords.filter((episode) => {
         const keyword = appliedEpisodeFilters.query.trim().toLowerCase();
@@ -761,22 +523,487 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
         });
     };
 
-    const visibleTasks = tasksAbnormalOnly
-        ? GENERATION_TASKS.filter((task) => task.abnormal)
-        : GENERATION_TASKS;
 
-    const visibleAssets = SHARED_ASSETS
-        .filter((asset) => assetCategory === '角色')
-        .filter((asset) => assetStatusFilter === '全部审核状态' || asset.status === assetStatusFilter)
-        .filter((asset) => {
-            const keyword = assetSearch.trim().toLowerCase();
-            return !keyword || `${asset.name} ${asset.role}`.toLowerCase().includes(keyword);
-        })
-        .sort((left, right) => {
-            if (assetSort === '引用最多') return right.referenceCount - left.referenceCount;
-            if (assetSort === '名称排序') return left.name.localeCompare(right.name, 'zh-CN');
-            return 0;
+    /**
+     * 「项目资产」标签页的数据来源。
+     * 资产确认面板以「集」为组织维度，只有真实解析出的分集才能进面板；
+     * 没有解析结果时给空数组，由面板外层显示引导文案，而不是套用演示分集。
+     */
+    const assetEpisodes = useMemo(() => project?.scriptAnalysis?.episodes || [], [project]);
+
+    /** 从「分集管理」点进来时记住的当前集，用于资产面板默认定位 */
+    const assetInitialEpisode = useMemo(() => {
+        if (assetEpisodes.length === 0) return undefined;
+        try {
+            const saved = Number(localStorage.getItem(`shot-editor:active-episode:${projectId}`));
+            return assetEpisodes.some((ep) => ep.episode === saved) ? saved : assetEpisodes[0].episode;
+        } catch {
+            return assetEpisodes[0].episode;
+        }
+    }, [assetEpisodes, projectId]);
+
+    /** 资产面板回传的最新资产表（含生成图）；未回传前先用本地缓存，避免顶部统计闪 0 */
+    const [assetState, setAssetState] = useState<EpisodeMap | null>(() => loadAssetStore(projectId));
+
+    useEffect(() => {
+        setAssetState(loadAssetStore(projectId));
+    }, [projectId]);
+
+    const handleAssetsChange = React.useCallback((map: EpisodeMap) => {
+        setAssetState((prev) => (JSON.stringify(prev) === JSON.stringify(map) ? prev : map));
+        // 资产变动会改变「已出图 / 资产确认」统计，触发逐集状态重新推导
+        setAssetRefreshToken((n) => n + 1);
+    }, []);
+
+    /**
+     * 资产统计：直接取逐集状态的汇总（同一资产跨集共享 id，逐集推导时按集不去重，
+     * 但顶部只需要「项目级去重后的资产数」，因此这里仍用本地资产表去重统计）。
+     */
+    const assetSummary = useMemo(() => {
+        const map = assetState || {};
+        let total = 0;
+        let generated = 0;
+        const seen = new Set<string>();
+        for (const catMap of Object.values(map)) {
+            for (const key of ['characters', 'scenes', 'props'] as const) {
+                for (const asset of catMap?.[key] || []) {
+                    if (seen.has(asset.id)) continue;
+                    seen.add(asset.id);
+                    total += 1;
+                    if (asset.imageUrl || asset.looks?.some((look) => look.imageUrl)) generated += 1;
+                }
+            }
+        }
+        return { total, generated };
+    }, [assetState]);
+
+    /**
+     * 生成任务列表：直接映射后端 project_jobs 台账。
+     * 每一行都是一次真实的生成尝试，状态与失败原因由生成侧在任务结束时写入，
+     * 不再由逐集产物进度「反推」。
+     */
+    const generationTasks = useMemo<GenerationTask[]>(() => {
+        return projectJobs.map((job) => {
+            const meta = JOB_KIND_META[job.kind] || { node: '生成任务', service: '生成服务' };
+            const abnormal = isJobAbnormal(job);
+            const failed = job.status === 'failed';
+            const succeeded = job.status === 'succeeded';
+            const updatedTs = job.updatedAt ? Date.parse(job.updatedAt) : job.startedAt;
+
+            return {
+                id: job.id,
+                title: describeJob(job),
+                node: meta.node,
+                service: meta.service,
+                // 真实任务没有细粒度进度：完成后 100，其余留空由 UI 显示为「进行中」
+                progress: succeeded ? 100 : null,
+                status: succeeded ? '已完成' : failed ? '失败' : abnormal ? '超时' : '运行中',
+                statusTone: succeeded ? 'green' : (failed || abnormal) ? 'red' : 'blue',
+                updatedAt: formatRelativeTime(updatedTs || null),
+                canRetry: failed || abnormal,
+                abnormal,
+                actorId: job.createdBy,
+                actorName: job.createdByName || '未命名用户',
+                actorRole: job.createdByRole,
+                actorKnown: Boolean(job.createdBy),
+                isMe: Boolean(user?.id) && job.createdBy === user?.id,
+                job,
+            };
         });
+    }, [projectJobs, user?.id]);
+
+    /**
+     * 触发人下拉选项：只聚合任务里真实出现过的人。
+     * 不拉全量用户表，避免下拉里全是从未生成过的人。
+     */
+    const taskActors = useMemo(() => {
+        const map = new Map<string, { id: string; name: string; role: string }>();
+        for (const job of projectJobs) {
+            if (!job.createdBy || map.has(job.createdBy)) continue;
+            map.set(job.createdBy, {
+                id: job.createdBy,
+                name: job.createdByName || '未命名用户',
+                role: job.createdByRole || '',
+            });
+        }
+        return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    }, [projectJobs]);
+
+    /** 历史任务数（005 迁移前写入，没有触发人记录） */
+    const legacyTaskCount = useMemo(
+        () => projectJobs.filter((job) => !job.createdBy).length,
+        [projectJobs],
+    );
+
+    /** 生成任务列表：支持「仅看异常」+「按触发人」筛选，两者叠加 */
+    const visibleTasks = generationTasks.filter((task) => {
+        if (tasksAbnormalOnly && !task.abnormal) return false;
+        if (tasksActorFilter === 'me' && !task.isMe) return false;
+        if (tasksActorFilter.startsWith('id:') && task.actorId !== tasksActorFilter.slice(3)) return false;
+        return true;
+    });
+
+    /** 异常任务数：驱动顶部「生成任务」红点 */
+    const abnormalTaskCount = useMemo(
+        () => generationTasks.filter((task) => task.abnormal).length,
+        [generationTasks],
+    );
+
+    /** 刷新任务台账（按钮 + 重试后复用） */
+    const handleRefreshTasks = async () => {
+        await refreshJobs();
+        setToast('任务列表已刷新');
+    };
+
+    /**
+     * 重试任务。
+     * 资产出图可以直接按原参数重发；视频任务缺参考图与首帧，重发会得到不同画面，
+     * 因此改为跳回画布对应集，在那里带着完整上下文重试。
+     */
+    const handleRetryTask = async (task: GenerationTask) => {
+        const result = await retryJob(projectId, task.job);
+        setToast(result.message);
+        if (result.ok) {
+            setExpandedJobId(null);
+            await refreshJobs();
+            return;
+        }
+        if (result.needCanvas && task.job.episode) {
+            onEnterWorkflow?.(projectId, task.job.episode);
+        }
+    };
+
+    /**
+     * 版本记录：把逐集在各节点上「已产生的产物」列成版本行。
+     * 只有真正落地的节点才有版本（解析 → 资产设定图 → 分镜脚本 → 整集成片）。
+     */
+    const versionRecords = useMemo<VersionRecord[]>(() => {
+        const list: VersionRecord[] = [];
+        const owner = project?.owner || '系统';
+
+        if (project?.scriptName || episodeStatuses.length > 0) {
+            list.push({
+                object: `全剧剧本 · ${project?.scriptName || '解析结果'}`,
+                version: 'V1',
+                description: `锁定 ${episodeStatuses.length} 集分集结构`,
+                status: '已锁定',
+                statusTone: 'green',
+                creator: owner,
+                createdAt: project?.createdAt || '—',
+            });
+        }
+
+        for (const ep of episodeStatuses) {
+            const epLabel = `第${ep.id}集`;
+
+            if (ep.assetGenerated > 0) {
+                list.push({
+                    object: `${epLabel} · 角色 / 场景 / 道具设定图`,
+                    version: 'V1',
+                    description: `已生成 ${ep.assetGenerated} / ${ep.assetTotal} 项，跨集共享`,
+                    status: ep.assetGenerated >= ep.assetTotal ? '当前使用' : '部分生成',
+                    statusTone: ep.assetGenerated >= ep.assetTotal ? 'green' : 'gray',
+                    creator: owner,
+                    createdAt: formatRelativeTime(ep.updatedAt),
+                });
+            }
+
+            if (ep.shotTotal > 0) {
+                list.push({
+                    object: `${epLabel} · 镜头脚本`,
+                    version: 'V1',
+                    description: `拆出 ${ep.shotTotal} 个镜头，合并 ${ep.sceneMerged} / ${ep.sceneTotal} 场`,
+                    status: ep.sceneMerged >= ep.sceneTotal ? '当前使用' : '待选用',
+                    statusTone: ep.sceneMerged >= ep.sceneTotal ? 'green' : 'gray',
+                    creator: owner,
+                    createdAt: formatRelativeTime(ep.updatedAt),
+                });
+            }
+
+            if (ep.finalDone) {
+                list.push({
+                    object: `${epLabel} · 整集成片`,
+                    version: 'V1',
+                    description: `${ep.shotVideoDone} 个镜头已合成，时长 ${formatDuration(ep.durationSeconds)}`,
+                    status: '当前使用',
+                    statusTone: 'green',
+                    creator: owner,
+                    createdAt: formatRelativeTime(ep.updatedAt),
+                });
+            }
+        }
+
+        return list;
+    }, [episodeStatuses, project]);
+
+    /**
+     * 审核记录：与分集表「审核状态」列同源。
+     * 只列出已进入审核流的集（有分镜或已成片），未提交的集不进审核池。
+     */
+    const reviewRecords = useMemo<ReviewRecord[]>(() => {
+        const list: ReviewRecord[] = [];
+        const submitter = project?.owner || '系统';
+
+        for (const ep of episodeStatuses) {
+            const epLabel = `第${ep.id}集`;
+
+            if (ep.sceneTotal > 0) {
+                const pending = ep.sceneMerged < ep.sceneTotal;
+                list.push({
+                    object: `${epLabel} · 镜头脚本`,
+                    version: 'V1',
+                    node: '分镜审核',
+                    scope: '内容制作部 / 分镜审核角色',
+                    result: pending ? '待审核' : '已通过',
+                    resultTone: pending ? 'yellow' : 'green',
+                    submitter,
+                    createdAt: formatRelativeTime(ep.updatedAt),
+                });
+            }
+
+            if (ep.shotTotal > 0 && ep.shotVideoDone >= ep.shotTotal) {
+                list.push({
+                    object: `${epLabel} · 整集成片`,
+                    version: 'V1',
+                    node: '成片审核',
+                    scope: '内容部 / 成片审核角色',
+                    result: ep.finalDone ? '已通过' : '待复审',
+                    resultTone: ep.finalDone ? 'green' : 'yellow',
+                    submitter,
+                    createdAt: formatRelativeTime(ep.updatedAt),
+                });
+            }
+        }
+
+        return list;
+    }, [episodeStatuses, project]);
+
+    // ========================================================================
+    // 概览标签：全部由 projectStats / episodeStatuses 推导
+    // ========================================================================
+
+    /** 生产总览的五个流程节点：详情可由真实统计拼出，state 决定圆点样式 */
+    const overviewFlow = useMemo(() => {
+        const s = projectStats;
+        const total = s.total;
+        const state = (done: boolean, active: boolean): 'done' | 'active' | 'pending' =>
+            done ? 'done' : active ? 'active' : 'pending';
+
+        // 剧本是否锁定：有解析结果即视为已锁定分集
+        const locked = total > 0;
+        return [
+            {
+                number: 1,
+                title: '剧本锁定',
+                detail: locked ? `${project?.scriptName || '剧本'} 已锁定` : '待锁定剧本',
+                state: state(locked, !locked),
+            },
+            {
+                number: 2,
+                title: '解析与资产',
+                detail: locked ? `${total} 集已解析 · 资产 ${s.assetGenerated}/${s.assetTotal}` : '待解析',
+                state: state(s.assetGenerated > 0 && s.assetGenerated >= s.assetTotal, locked && s.assetGenerated < s.assetTotal),
+            },
+            {
+                number: 3,
+                title: '分镜生产',
+                detail: s.shotTotal > 0
+                    ? `${episodeStatuses.filter((e) => e.shotTotal > 0).length} 集已拆分镜`
+                    : '待拆分镜',
+                state: state(s.shotTotal > 0 && s.shotVideoDone >= s.shotTotal, s.shotTotal > 0 && s.shotVideoDone < s.shotTotal),
+            },
+            {
+                number: 4,
+                title: '镜头视频',
+                detail: s.shotTotal > 0 ? `${s.videoDoneEpisodes} 集已完成 · ${s.runningEpisodes} 集生产中` : '未开始',
+                state: state(s.videoDoneEpisodes > 0 && s.videoDoneEpisodes >= total, s.shotVideoDone > 0 && s.videoDoneEpisodes < total),
+            },
+            {
+                number: 5,
+                title: '整集成片',
+                detail: s.doneEpisodes > 0 ? `${s.doneEpisodes} 集已通过` : '未开始',
+                state: state(s.doneEpisodes > 0 && s.doneEpisodes >= total, s.videoDoneEpisodes > 0 && s.doneEpisodes < total),
+            },
+        ];
+    }, [projectStats, episodeStatuses, project]);
+
+    /** 流程条连线颜色：前一段连通则为绿，正在推进为紫，未开始为灰 */
+    const flowLines = useMemo(
+        () => overviewFlow.slice(0, -1).map((step, i) => {
+            const next = overviewFlow[i + 1];
+            if (step.state === 'done' && next.state === 'done') return 'bg-[#a9e7bf]';
+            if (step.state === 'done' || next.state === 'active') return 'bg-[#d4d1fb]';
+            return 'bg-[#e8eaf1]';
+        }),
+        [overviewFlow]
+    );
+
+    /** 生产统计四宫格 */
+    const productionStats = useMemo(() => {
+        const s = projectStats;
+        const total = s.total;
+        return [
+            { label: '解析完成', value: `${episodeStatuses.filter((e) => e.stageKey !== 'pendingInit').length} / ${total} 集` },
+            { label: '分镜完成', value: `${episodeStatuses.filter((e) => e.shotTotal > 0).length} / ${total} 集` },
+            { label: '视频完成', value: `${s.videoDoneEpisodes} / ${total} 集` },
+            { label: '成片通过', value: `${s.doneEpisodes} / ${total} 集` },
+        ];
+    }, [projectStats, episodeStatuses]);
+
+    /**
+     * 待我处理：按优先级从真实数据里挑出需要人工介入的项
+     * （异常镜头 → 待审核集数 → 待确认资产），没有则显示空态。
+     */
+    const pendingTasks = useMemo(() => {
+        /** actionable=false 表示空态占位，不计入红点数量 */
+        const items: { title: string; meta: string; color: string; actionable: boolean }[] = [];
+
+        if (projectStats.abnormal > 0) {
+            items.push({
+                title: `${projectStats.abnormal} 个异常镜头待重试`,
+                meta: '系统任务 · 超过 15 分钟未完成',
+                color: '#ff4d4f',
+                actionable: true,
+            });
+        }
+
+        const reviewEps = episodeStatuses.filter((e) =>
+            e.review === '待审核' || e.review === '待成片审核' || e.review === '待确认'
+        );
+        if (reviewEps.length > 0) {
+            const first = reviewEps[0];
+            items.push({
+                title: `第 ${first.id} 集 ${first.stage}待复审`,
+                meta: reviewEps.length > 1 ? `另有 ${reviewEps.length - 1} 集待处理` : first.review,
+                color: '#ff9f1c',
+                actionable: true,
+            });
+        }
+
+        // 待确认资产：从已解析的集里找出还没出设定图的资产
+        const assetStore = assetState || {};
+        let pendingAssetTotal = 0;
+        let pendingAssetSample = '';
+        let pendingAssetEpisode = '';
+        for (const ep of episodeStatuses) {
+            const catMap = assetStore[String(ep.episode)] as Record<string, { name?: string; imageUrl?: string; looks?: { imageUrl?: string }[] }[]> | undefined;
+            if (!catMap) continue;
+            const pending = ['characters', 'scenes', 'props']
+                .flatMap((k) => catMap[k] || [])
+                .filter((a) => !a.imageUrl && !a.looks?.some((l) => l.imageUrl));
+            if (pending.length === 0) continue;
+            pendingAssetTotal += pending.length;
+            if (!pendingAssetSample) {
+                pendingAssetSample = pending[0].name || '未命名';
+                pendingAssetEpisode = ep.id;
+            }
+        }
+        if (pendingAssetTotal > 0) {
+            items.push({
+                title: `资产「${pendingAssetSample}」等 ${pendingAssetTotal} 项待生成设定图`,
+                meta: `第 ${pendingAssetEpisode} 集起 · 资产确认`,
+                color: '#1677ff',
+                actionable: true,
+            });
+        }
+
+        if (items.length === 0) {
+            items.push({
+                title: '暂无待处理事项',
+                meta: episodeStatuses.length > 0 ? '所有分集均已进入生产' : '请先在「分集管理」确认剧本解析结果',
+                color: '#00b42a',
+                actionable: false,
+            });
+        }
+        return items;
+    }, [projectStats, episodeStatuses, assetState]);
+
+    /**
+     * 最近生产的分集：按「有视频任务/已出图」优先 + 集号顺序取前两条，
+     * 与分集表同源，不再写死「雨夜重逢」。
+     */
+    const recentEpisodes = useMemo(() => {
+        const sorted = [...episodeStatuses].sort((a, b) => {
+            if (b.progress !== a.progress) return b.progress - a.progress;
+            return a.episode - b.episode;
+        });
+        return sorted.slice(0, 2).map((e) => ({
+            episode: `第 ${e.id} 集`,
+            title: e.title,
+            stage: e.stage,
+            stageClass: EPISODE_BADGE_TONES[e.stageTone],
+            updated: formatRelativeTime(e.updatedAt),
+        }));
+    }, [episodeStatuses]);
+
+    /** 项目动态：把真实的里程碑事件拼出来（解析完成 / 资产出图 / 镜头视频进度） */
+    const activities = useMemo(() => {
+        const items: { title: string; meta: string; color: string }[] = [];
+        const s = projectStats;
+
+        if (s.total > 0) {
+            items.push({
+                title: '剧本解析完成',
+                meta: `共识别 ${s.total} 集、资产 ${s.assetTotal} 项`,
+                color: '#2f6bff',
+            });
+        }
+        if (s.assetGenerated > 0) {
+            items.push({
+                title: `资产设定图已生成 ${s.assetGenerated} 项`,
+                meta: `覆盖 ${s.assetDoneEpisodes} 集 · 项目资产`,
+                color: '#10b5a7',
+            });
+        }
+        if (s.shotTotal > 0) {
+            items.push({
+                title: `分镜已拆分 ${s.shotTotal} 个片段`,
+                meta: `镜头视频 ${s.shotVideoDone} / ${s.shotTotal}`,
+                color: '#8b5cf6',
+            });
+        }
+        if (s.doneEpisodes > 0) {
+            items.push({
+                title: `整集成片已完成 ${s.doneEpisodes} 集`,
+                meta: `进度 ${s.progressPercent}%`,
+                color: '#00b42a',
+            });
+        }
+        if (items.length === 0) {
+            items.push({ title: '项目已创建，等待解析剧本', meta: project?.createdAt || '—', color: '#c9cdd4' });
+        }
+        return items.slice(0, 4);
+    }, [projectStats, project]);
+
+    /**
+     * 顶部项目概览条：字段全部来自真实项目记录，
+     * 进度百分比取逐集加权进度（与分集表、各标签统计同源）。
+     */
+    const projectHeader = useMemo(() => {
+        const total = projectStats.total || project?.totalEpisodes || 0;
+        const segments = [
+            project?.category,
+            project?.productionMode,
+            project?.scriptName ? `锁定剧本 ${project.scriptName}` : '',
+        ].filter(Boolean);
+        const completed = total > 0 && projectStats.doneEpisodes >= total;
+        const started = projectStats.inProduction > 0 || projectStats.doneEpisodes > 0;
+        return {
+            name: project?.name || '未命名项目',
+            status: completed ? '已完成' : started ? '制作中' : '待制作',
+            statusTone: completed
+                ? 'bg-[#e8ffea] text-[#00b42a]'
+                : started
+                    ? 'bg-[#e8f2ff] text-[#2f6bff]'
+                    : 'bg-[#f2f3f5] text-[#86909c]',
+            summary: segments.length > 0 ? segments.join(' · ') : '暂无项目描述',
+            code: project?.code || projectId,
+            owner: project?.owner || '未指派',
+            department: project?.department || '—',
+            updatedAt: project?.updatedAt || '—',
+            progress: projectStats.progressPercent,
+        };
+    }, [project, projectId, projectStats]);
 
     return (
         <div className="project-detail-page h-screen w-screen overflow-hidden bg-[#f5f6fa] text-[#1d2129]">
@@ -805,7 +1032,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                         <div className="flex min-w-0 items-baseline gap-3">
                             <span className="shrink-0 text-[16px] font-semibold text-[#1c2745]">短剧项目</span>
                             <span className="shrink-0 text-[22px] font-light text-[#c9cdd4]">/</span>
-                            <h1 className="truncate text-[20px] font-semibold text-[#1c2745]">{MOCK_PROJECT.name}</h1>
+                            <h1 className="truncate text-[20px] font-semibold text-[#1c2745]">{projectHeader.name}</h1>
                         </div>
 
                         <div className="flex shrink-0 items-center gap-3">
@@ -826,7 +1053,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                 className="flex h-9 items-center gap-1.5 rounded-md bg-[#4558dc] px-4 text-[14px] font-medium text-white transition-colors hover:bg-[#5c6fe4]"
                             >
                                 <GitBranch size={15} />
-                                进入工作流
+                                进入画布
                             </button>
                         </div>
                     </div>
@@ -842,20 +1069,20 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                     </div>
                                     <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-2.5">
-                                            <h2 className="truncate text-[20px] font-semibold text-[#1c2745]">{MOCK_PROJECT.name}</h2>
-                                            <span className="inline-flex shrink-0 items-center rounded bg-[#e8f2ff] px-2 py-0.5 text-[11px] text-[#2f6bff]">
-                                                {MOCK_PROJECT.status}
+                                            <h2 className="truncate text-[20px] font-semibold text-[#1c2745]">{projectHeader.name}</h2>
+                                            <span className={`inline-flex shrink-0 items-center rounded px-2 py-0.5 text-[11px] ${projectHeader.statusTone}`}>
+                                                {projectHeader.status}
                                             </span>
                                         </div>
-                                        <p className="mt-1.5 text-[12px] text-[#7f889d]">{MOCK_PROJECT.summary}</p>
+                                        <p className="mt-1.5 text-[12px] text-[#7f889d]">{projectHeader.summary}</p>
                                         <div className="mt-4 flex flex-wrap items-center gap-y-2 text-[12px] text-[#9ca4b7]">
-                                            <span>项目编号 {MOCK_PROJECT.code}</span>
+                                            <span>项目编号 {projectHeader.code}</span>
                                             <span className="mx-4 h-3 w-px bg-[#e5e7ef]" />
-                                            <span>负责人 {MOCK_PROJECT.owner}</span>
+                                            <span>负责人 {projectHeader.owner}</span>
                                             <span className="mx-4 h-3 w-px bg-[#e5e7ef]" />
-                                            <span>{MOCK_PROJECT.department}</span>
+                                            <span>{projectHeader.department}</span>
                                             <span className="mx-4 h-3 w-px bg-[#e5e7ef]" />
-                                            <span>最近更新 {MOCK_PROJECT.updatedAt}</span>
+                                            <span>最近更新 {projectHeader.updatedAt}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -863,10 +1090,10 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                 <div className="w-[270px] shrink-0">
                                     <div className="flex items-end justify-between text-[11px] text-[#9ca4b7]">
                                         <span>整剧进度</span>
-                                        <strong className="text-[18px] font-semibold leading-none text-[#1c2745]">{MOCK_PROJECT.progress}%</strong>
+                                        <strong className="text-[18px] font-semibold leading-none text-[#1c2745]">{projectHeader.progress}%</strong>
                                     </div>
                                     <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#edf0f7]">
-                                        <div className="h-full rounded-full bg-[linear-gradient(90deg,#5b56ee,#433bd9)]" style={{ width: `${MOCK_PROJECT.progress}%` }} />
+                                        <div className="h-full rounded-full bg-[linear-gradient(90deg,#5b56ee,#433bd9)]" style={{ width: `${projectHeader.progress}%` }} />
                                     </div>
                                 </div>
                             </div>
@@ -892,7 +1119,14 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                             <span className="inline-flex h-[18px] min-w-[24px] items-center justify-center rounded-full bg-[#f2f3f5] px-1.5 text-[10px] font-normal text-[#86909c]">{count}</span>
                                         ) : null;
                                     })()}
-                                    {'dot' in tab && tab.dot ? <span className="h-1.5 w-1.5 rounded-full bg-[#ff4d4f]" /> : null}
+                                    {tab.key === 'tasks' && abnormalTaskCount > 0 ? (
+                                        <span
+                                            className="inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-[#ff4d4f] px-1 text-[10px] font-normal leading-none text-white"
+                                            title={`${abnormalTaskCount} 个异常任务`}
+                                        >
+                                            {abnormalTaskCount > 99 ? '99+' : abnormalTaskCount}
+                                        </span>
+                                    ) : null}
                                     {activeTab === tab.key && <span className="absolute bottom-0 left-0 h-[2px] w-full rounded-full bg-[#4558dc]" />}
                                 </button>
                             ))}
@@ -915,9 +1149,9 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                     </div>
                                     <div className="flex flex-1 flex-col px-6 pb-6 pt-6">
                                         <div className="flex items-center overflow-x-auto pb-1">
-                                            {FLOW_STEPS.map((step, index) => (
+                                            {overviewFlow.map((step, index) => (
                                                 <React.Fragment key={step.title}>
-                                                    {index > 0 && <div className={`mx-3 h-px min-w-[28px] flex-1 ${FLOW_LINES[index - 1]}`} />}
+                                                    {index > 0 && <div className={`mx-3 h-px min-w-[28px] flex-1 ${flowLines[index - 1]}`} />}
                                                     <div className="flex shrink-0 items-center gap-2.5">
                                                         <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-medium ${step.state === 'done' ? 'bg-[#10b981] text-white' : step.state === 'active' ? 'bg-[#5b56ee] text-white' : 'border border-[#d9d9d9] bg-white text-[#a0a6b4]'}`}>
                                                             {step.state === 'done' ? <Check size={11} strokeWidth={3} /> : step.number}
@@ -932,7 +1166,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                         </div>
 
                                         <div className="mt-8 grid grid-cols-4 gap-2 max-[850px]:grid-cols-2">
-                                            {PRODUCTION_STATS.map((stat) => (
+                                            {productionStats.map((stat) => (
                                                 <div key={stat.label} className="rounded-[5px] bg-[#f7f8fc] px-4 py-3">
                                                     <div className="text-[11px] text-[#9ca4b7]">{stat.label}</div>
                                                     <div className="mt-1.5 text-[15px] font-semibold text-[#1c2745]">{stat.value}</div>
@@ -946,10 +1180,16 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                 <section className="flex min-h-[326px] flex-col overflow-hidden rounded-[10px] border border-[#e9ebf2] bg-white shadow-[0_2px_8px_rgba(33,43,83,0.03)]">
                                     <div className="flex h-[64px] shrink-0 items-center justify-between border-b border-[#eef0f6] px-6">
                                         <h2 className="text-[16px] font-semibold text-[#1c2745]">待我处理</h2>
-                                        <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#ff4d4f] px-1 text-[11px] font-medium text-white">5</span>
+                                        {pendingTasks.some((task) => task.actionable) ? (
+                                            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#ff4d4f] px-1 text-[11px] font-medium text-white">
+                                                {pendingTasks.filter((task) => task.actionable).length}
+                                            </span>
+                                        ) : (
+                                            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#f2f3f5] px-1 text-[11px] font-medium text-[#86909c]">0</span>
+                                        )}
                                     </div>
                                     <div className="flex flex-1 flex-col px-6">
-                                        {PENDING_TASKS.map((task) => (
+                                        {pendingTasks.map((task) => (
                                             <div key={task.title} className="flex flex-1 items-center gap-3 border-b border-[#f0f1f5] py-4 last:border-b-0">
                                                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: task.color }} />
                                                 <div className="min-w-0 flex-1">
@@ -981,19 +1221,33 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                    {RECENT_EPISODES.map((episode) => (
-                                                        <tr key={episode.episode} className="border-b border-[#f0f1f5] text-[13px] text-[#1d2129] last:border-b-0">
-                                                            <td className="px-4 py-[17px] font-medium">{episode.episode}</td>
-                                                            <td className="px-4 py-[17px]">{episode.title}</td>
-                                                            <td className="px-4 py-[17px]">
-                                                                <span className={`inline-flex rounded px-2 py-1 text-[11px] ${episode.stageClass}`}>{episode.stage}</span>
-                                                            </td>
-                                                            <td className="px-4 py-[17px]">{episode.updated}</td>
-                                                            <td className="px-4 py-[17px]">
-                                                                <button type="button" onClick={() => handleEnterWorkflow()} className="text-[#4558dc] transition-colors hover:text-[#6878e7]">进入画布</button>
+                                                    {recentEpisodes.length === 0 ? (
+                                                        <tr>
+                                                            <td colSpan={5} className="px-4 py-12 text-center text-[12px] text-[#9ca4b7]">
+                                                                暂无生产中的数据，请先在「分集管理」完成剧本解析
                                                             </td>
                                                         </tr>
-                                                    ))}
+                                                    ) : (
+                                                        recentEpisodes.map((episode) => (
+                                                            <tr key={episode.episode} className="border-b border-[#f0f1f5] text-[13px] text-[#1d2129] last:border-b-0">
+                                                                <td className="px-4 py-[17px] font-medium">{episode.episode}</td>
+                                                                <td className="max-w-0 truncate px-4 py-[17px]">{episode.title}</td>
+                                                                <td className="px-4 py-[17px]">
+                                                                    <span className={`inline-flex rounded px-2 py-1 text-[11px] ${episode.stageClass}`}>{episode.stage}</span>
+                                                                </td>
+                                                                <td className="px-4 py-[17px]">{episode.updated}</td>
+                                                                <td className="px-4 py-[17px]">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleEnterWorkflow(Number(episode.episode.replace(/[^\d]/g, '')) || undefined)}
+                                                                        className="text-[#4558dc] transition-colors hover:text-[#6878e7]"
+                                                                    >
+                                                                        进入画布
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        ))
+                                                    )}
                                                 </tbody>
                                             </table>
                                         </div>
@@ -1007,8 +1261,8 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                     </div>
                                     <div className="flex-1 px-6 py-5">
                                         <div className="space-y-5">
-                                            {ACTIVITIES.map((activity) => (
-                                                <div key={activity.title} className="flex items-start gap-3">
+                                            {activities.map((activity, index) => (
+                                                <div key={`${activity.title}-${index}`} className="flex items-start gap-3">
                                                     <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full border-2 bg-white" style={{ borderColor: activity.color }} />
                                                     <div className="min-w-0">
                                                         <div className="text-[12.5px] font-medium text-[#1d2129]">{activity.title}</div>
@@ -1031,14 +1285,14 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                         <button
                                             type="button"
                                             disabled
-                                            className="h-8 cursor-not-allowed rounded-[4px] border border-[#e5e6eb] bg-[#f7f8fa] px-3 text-[12px] text-[#c9cdd4]"
+                                            className="h-8 cursor-not-allowed rounded-[4px] border border-[#e5e6eb] bg-[#f7f8fa] px-3 text-[12px] text-[#c9cdd4] hidden"
                                         >
                                             批量初始化画布
                                         </button>
                                         <button
                                             type="button"
                                             disabled
-                                            className="h-8 cursor-not-allowed rounded-[4px] border border-[#e5e6eb] bg-[#f7f8fa] px-3 text-[12px] text-[#c9cdd4]"
+                                            className="h-8 cursor-not-allowed rounded-[4px] border border-[#e5e6eb] bg-[#f7f8fa] px-3 text-[12px] text-[#c9cdd4] hidden"
                                         >
                                             设置协作角色
                                         </button>
@@ -1053,7 +1307,13 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                 </div>
 
                                 <section className="grid grid-cols-5 overflow-hidden rounded-[10px] border border-[#e9ebf2] bg-white shadow-[0_2px_8px_rgba(33,43,83,0.03)] max-[900px]:grid-cols-2">
-                                    {EPISODE_STATS.map((stat, index) => (
+                                    {[
+                                        { label: '总集数', value: String(projectStats.total), color: 'text-[#1c2745]' },
+                                        { label: '生产中', value: String(projectStats.inProduction), color: 'text-[#ff7d00]' },
+                                        { label: '待审核', value: String(projectStats.pendingReview), color: 'text-[#ff9f1c]' },
+                                        { label: '已完成', value: String(projectStats.done), color: 'text-[#00b42a]' },
+                                        { label: '异常镜头', value: String(projectStats.abnormal), color: 'text-[#ff4d4f]' },
+                                    ].map((stat, index) => (
                                         <div
                                             key={stat.label}
                                             className={`flex min-h-[92px] flex-col items-center justify-center px-4 py-4 ${index > 0 ? 'border-l border-[#f0f1f5]' : ''}`}
@@ -1179,17 +1439,23 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                         <td className="px-4 py-4 align-middle">
                                                             <span className={`inline-flex rounded-[3px] px-2 py-1 text-[11px] ${EPISODE_BADGE_TONES[episode.stageTone]}`}>{episode.stage}</span>
                                                         </td>
-                                                        <td className="whitespace-nowrap px-4 py-4 align-middle">{episode.review}</td>
+                                                        <td className="whitespace-nowrap px-4 py-4 align-middle">
+                                                            {episode.review === '—' ? (
+                                                                <span className="text-[#c9cdd4]">—</span>
+                                                            ) : (
+                                                                <span className={`inline-flex rounded-[3px] px-2 py-1 text-[11px] ${EPISODE_BADGE_TONES[episode.reviewTone]}`}>{episode.review}</span>
+                                                            )}
+                                                        </td>
                                                         <td className="whitespace-nowrap px-4 py-4 align-middle text-[#4e5969]">{episode.updated}</td>
                                                         <td className="px-4 py-4 align-middle">
                                                             <div className="flex items-center gap-4 whitespace-nowrap">
                                                                 <button type="button" onClick={() => handleEnterWorkflow(Number(episode.id))} className="text-[#2f74ff] transition-colors hover:text-[#5c8fff]">进入画布</button>
-                                                                <button type="button" onClick={() => setToast(`查看第 ${episode.id} 集制作进度`)} className="text-[#2f74ff] transition-colors hover:text-[#5c8fff]">进度</button>
+                                                                <button type="button" onClick={() => setToast(`查看第 ${episode.id} 集制作进度`)} className="text-[#2f74ff] transition-colors hover:text-[#5c8fff] hidden">进度</button>
                                                                 <button
                                                                     type="button"
                                                                     aria-label={`第 ${episode.id} 集更多操作`}
                                                                     onClick={() => setToast('更多操作暂未接入')}
-                                                                    className="text-[#86909c] transition-colors hover:text-[#4558dc]"
+                                                                    className="text-[#86909c] transition-colors hover:text-[#4558dc] hidden"
                                                                 >
                                                                     <MoreVertical size={15} />
                                                                 </button>
@@ -1211,152 +1477,103 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                             <div className="mt-4 space-y-4">
                                 <div className="flex flex-wrap items-start justify-between gap-4">
                                     <div>
-                                        <h2 className="text-[18px] font-semibold text-[#1c2745]">项目共享资产</h2>
-                                        <p className="mt-1 text-[12px] text-[#9ca4b7]">具备查看和复用权限即可直接引用；无权限时向管理员申请授权，不要求原创建者确认</p>
+                                        <h2 className="text-[18px] font-semibold text-[#1c2745]">项目资产</h2>
+                                        <p className="mt-1 text-[12px] text-[#9ca4b7]">
+                                            确认 AI 从剧本提取的角色 / 场景 / 道具，生成并管理设定图；同一资产跨集复用同一张图
+                                        </p>
                                     </div>
-                                    <div className="flex w-[132px] flex-col gap-2">
-                                        <button
-                                            type="button"
-                                            onClick={() => setToast('已打开素材库选择入口')}
-                                            className="h-8 rounded-[4px] border border-[#d9d9d9] bg-white px-3 text-[12px] text-[#1d2129] transition-colors hover:border-[#4558dc] hover:text-[#4558dc]"
-                                        >
-                                            从素材库选择
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setToast('已打开外部素材上传入口')}
-                                            className="flex h-8 items-center justify-center gap-1.5 rounded-[4px] border border-[#d9d9d9] bg-white px-3 text-[12px] text-[#1d2129] transition-colors hover:border-[#4558dc] hover:text-[#4558dc]"
-                                        >
-                                            <Upload size={13} />
-                                            上传外部素材
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setToast('已打开新建角色资产入口')}
-                                            className="flex h-8 items-center justify-center gap-1.5 rounded-[4px] bg-[#4558dc] px-3 text-[12px] font-medium text-white transition-colors hover:bg-[#5c6fe4]"
-                                        >
-                                            <Plus size={14} />
-                                            新建角色资产
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-2">
-                                    <label className="relative block w-[132px]">
-                                        <select
-                                            value={assetCategory}
-                                            onChange={(event) => setAssetCategory(event.target.value)}
-                                            className="project-detail-input h-8 w-full appearance-none rounded-[4px] border border-transparent bg-[#f7f8fa] pl-3 pr-8 text-[12px] text-[#1d2129] outline-none transition-colors focus:border-[#4558dc] focus:bg-white"
-                                        >
-                                            {withCurrentOption(ASSET_CATEGORIES, assetCategory).map((option) => (
-                                                <option key={option} value={option}>{option}</option>
-                                            ))}
-                                        </select>
-                                        <ChevronDown size={13} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#c9cdd4]" />
-                                    </label>
-
-                                    <label className="relative block w-[280px] max-w-full">
-                                        <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#86909c]" />
-                                        <input
-                                            type="search"
-                                            value={assetSearch}
-                                            onChange={(event) => setAssetSearch(event.target.value)}
-                                            placeholder={`搜索${assetCategory}资产`}
-                                            className="project-detail-input h-8 w-full rounded-[4px] border border-transparent bg-[#f7f8fa] pl-8 pr-3 text-[12px] text-[#1d2129] outline-none transition-colors placeholder:text-[#9ca4b7] focus:border-[#4558dc] focus:bg-white"
-                                        />
-                                    </label>
-
-                                    <label className="relative block w-[136px]">
-                                        <select
-                                            value={assetStatusFilter}
-                                            onChange={(event) => setAssetStatusFilter(event.target.value)}
-                                            className="project-detail-input h-8 w-full appearance-none rounded-[4px] border border-transparent bg-[#f7f8fa] pl-3 pr-8 text-[12px] text-[#1d2129] outline-none transition-colors focus:border-[#4558dc] focus:bg-white"
-                                        >
-                                            {withCurrentOption(ASSET_STATUS_OPTIONS, assetStatusFilter).map((option) => (
-                                                <option key={option} value={option}>{option}</option>
-                                            ))}
-                                        </select>
-                                        <ChevronDown size={13} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#c9cdd4]" />
-                                    </label>
-
-                                    <label className="relative block w-[164px]">
-                                        <select
-                                            value={assetSort}
-                                            onChange={(event) => setAssetSort(event.target.value)}
-                                            className="project-detail-input h-8 w-full appearance-none rounded-[4px] border border-transparent bg-[#f7f8fa] pl-3 pr-8 text-[12px] text-[#1d2129] outline-none transition-colors focus:border-[#4558dc] focus:bg-white"
-                                        >
-                                            {withCurrentOption(ASSET_SORT_OPTIONS, assetSort).map((option) => (
-                                                <option key={option} value={option}>{option}</option>
-                                            ))}
-                                        </select>
-                                        <ChevronDown size={13} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#c9cdd4]" />
-                                    </label>
-                                </div>
-
-                                <div className="grid grid-cols-4 gap-4 max-[1400px]:grid-cols-3 max-[1050px]:grid-cols-2 max-[720px]:grid-cols-1">
-                                    {visibleAssets.map((asset) => (
-                                        <article key={asset.id} className="flex min-w-0 flex-col overflow-hidden rounded-[10px] border border-[#e9ebf2] bg-white shadow-[0_2px_8px_rgba(33,43,83,0.03)]">
-                                            <div className="relative h-[126px] shrink-0 overflow-hidden" style={{ background: asset.gradient }}>
-                                                <span className="absolute left-4 top-3 select-none text-[32px] font-semibold leading-none text-white/90">{asset.initial}</span>
-                                                <span className={`absolute right-3 top-3 inline-flex rounded-[3px] bg-white/95 px-2 py-1 text-[11px] shadow-sm ${ASSET_STATUS_STYLES[asset.statusTone]}`}>
-                                                    {asset.status}
-                                                </span>
-                                            </div>
-                                            <div className="flex flex-1 flex-col px-5 py-5">
-                                                <h3 className="text-[16px] font-semibold text-[#1c2745]">{asset.name}</h3>
-                                                <p className="mt-2 text-[13px] text-[#4e5969]">{asset.role}</p>
-                                                <p className="mt-4 text-[11px] text-[#9ca4b7]">{asset.meta}</p>
-                                            </div>
-                                            <div className="grid grid-cols-2 divide-x divide-[#eef0f6] border-t border-[#eef0f6]">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setToast(`查看 ${asset.name} 资产详情`)}
-                                                    className="h-11 text-[12px] text-[#4e5969] transition-colors hover:bg-[#fafbff] hover:text-[#4558dc]"
-                                                >
-                                                    查看详情
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setToast(`编辑 ${asset.name} 资产版本`)}
-                                                    className="h-11 text-[12px] text-[#4e5969] transition-colors hover:bg-[#fafbff] hover:text-[#4558dc]"
-                                                >
-                                                    编辑版本
-                                                </button>
-                                            </div>
-                                        </article>
-                                    ))}
-                                    {visibleAssets.length === 0 && (
-                                        <div className="col-span-full flex min-h-[260px] items-center justify-center rounded-[10px] border border-[#e9ebf2] bg-white text-[13px] text-[#9ca4b7]">
-                                            暂无匹配的{assetCategory}资产
+                                    <div className="text-right text-[12px] text-[#9ca4b7]">
+                                        <div>
+                                            已识别资产{' '}
+                                            <strong className="text-[15px] font-semibold text-[#1c2745]">
+                                                {projectStats.assetTotal || assetSummary.total}
+                                            </strong>{' '}
+                                            项
                                         </div>
-                                    )}
+                                        <div className="mt-1">
+                                            已生成设定图{' '}
+                                            <strong className="text-[15px] font-semibold text-[#4558dc]">
+                                                {projectStats.assetGenerated || assetSummary.generated}
+                                            </strong>{' '}
+                                            项
+                                        </div>
+                                    </div>
                                 </div>
+
+                                {assetEpisodes.length === 0 ? (
+                                    <section className="rounded-[10px] border border-[#e9ebf2] bg-white px-6 py-16 text-center shadow-[0_2px_8px_rgba(33,43,83,0.03)]">
+                                        <div className="text-[13px] text-[#9ca4b7]">
+                                            该项目暂无剧本解析结果，请先在「分集管理」中完成剧本解析后再确认资产
+                                        </div>
+                                    </section>
+                                ) : (
+                                    <AssetConfirmPanel
+                                        projectId={projectId}
+                                        episodes={assetEpisodes}
+                                        contentType={project?.category}
+                                        initialEpisode={assetInitialEpisode}
+                                        fillHeight={false}
+                                        onAssetsChange={handleAssetsChange}
+                                    />
+                                )}
                             </div>
                         ) : activeTab === 'tasks' ? (
                             <div className="mt-4 space-y-4">
                                 <div className="flex flex-wrap items-start justify-between gap-4">
                                     <div>
                                         <h2 className="text-[18px] font-semibold text-[#1c2745]">生成任务</h2>
-                                        <p className="mt-1 text-[12px] text-[#9ca4b7]">统一查看解析、分镜、视频与成片任务，可重试失败节点</p>
+                                        <p className="mt-1 text-[12px] text-[#9ca4b7]">资产、分镜与画布节点的每一次生成都会留痕，失败与超时可从这里重试</p>
                                     </div>
-                                    <div className="flex w-[86px] flex-col gap-2">
-                                        <button
-                                            type="button"
-                                            onClick={() => setToast('任务列表已刷新')}
-                                            className="flex h-8 items-center justify-center gap-1.5 rounded-[4px] border border-[#d9d9d9] bg-white text-[12px] text-[#1d2129] transition-colors hover:border-[#4558dc] hover:text-[#4558dc]"
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <select
+                                            value={tasksActorFilter}
+                                            onChange={(event) => setTasksActorFilter(event.target.value)}
+                                            title="按触发人筛选任务"
+                                            className="h-8 rounded-[4px] border border-[#d9d9d9] bg-white px-2 text-[12px] text-[#1d2129] outline-none transition-colors hover:border-[#4558dc] focus:border-[#4558dc]"
                                         >
-                                            <RefreshCw size={13} />
-                                            刷新
-                                        </button>
+                                            <option value="all">全部人员</option>
+                                            {user?.id && <option value="me">仅看我发起的</option>}
+                                            {taskActors.map((actor) => (
+                                                <option key={actor.id} value={`id:${actor.id}`}>
+                                                    {actor.name}
+                                                    {ACTOR_ROLE_META[actor.role] ? `（${ACTOR_ROLE_META[actor.role].label}）` : ''}
+                                                </option>
+                                            ))}
+                                        </select>
                                         <button
                                             type="button"
                                             onClick={() => setTasksAbnormalOnly((current) => !current)}
-                                            className={`h-8 rounded-[4px] border text-[12px] transition-colors ${tasksAbnormalOnly ? 'border-[#4558dc] bg-[#f5f6ff] text-[#4558dc]' : 'border-[#d9d9d9] bg-white text-[#1d2129] hover:border-[#4558dc] hover:text-[#4558dc]'}`}
+                                            className={`h-8 rounded-[4px] border px-3 text-[12px] transition-colors ${tasksAbnormalOnly ? 'border-[#4558dc] bg-[#f5f6ff] text-[#4558dc]' : 'border-[#d9d9d9] bg-white text-[#1d2129] hover:border-[#4558dc] hover:text-[#4558dc]'}`}
                                         >
-                                            仅看异常
+                                            仅看异常{abnormalTaskCount > 0 ? ` ${abnormalTaskCount}` : ''}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleRefreshTasks()}
+                                            disabled={jobsLoading}
+                                            className="flex h-8 items-center justify-center gap-1.5 rounded-[4px] border border-[#d9d9d9] bg-white px-3 text-[12px] text-[#1d2129] transition-colors hover:border-[#4558dc] hover:text-[#4558dc] disabled:cursor-not-allowed disabled:text-[#c9cdd4]"
+                                        >
+                                            <RefreshCw size={13} className={jobsLoading ? 'animate-spin' : undefined} />
+                                            刷新
                                         </button>
                                     </div>
                                 </div>
+
+                                {legacyTaskCount > 0 && (
+                                    <div className="rounded-[8px] border border-[#ffe8ba] bg-[#fffbe6] px-4 py-2.5 text-[12px] text-[#ad6800]">
+                                        有 {legacyTaskCount} 条任务产生于改造前，未记录触发人，显示为「未记录」；此后新发起的任务都会按登录账号记人。
+                                    </div>
+                                )}
+
+                                {jobsError && (
+                                    <div role="alert" className="flex items-start gap-2 rounded-[8px] border border-[#ffccc7] bg-[#fff2f0] px-4 py-3 text-[12px] text-[#cf1322]">
+                                        <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                                        <span className="flex-1">{jobsError}</span>
+                                        <button type="button" onClick={() => void handleRefreshTasks()} className="shrink-0 text-[#cf1322] underline">
+                                            重试
+                                        </button>
+                                    </div>
+                                )}
 
                                 <section className="overflow-hidden rounded-[10px] border border-[#e9ebf2] bg-white shadow-[0_2px_8px_rgba(33,43,83,0.03)]">
                                     <div className="overflow-x-auto">
@@ -1368,74 +1585,152 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                     <th className="w-[180px] px-4 py-4 font-medium">生成服务</th>
                                                     <th className="w-[220px] px-4 py-4 font-medium">进度</th>
                                                     <th className="w-[90px] px-4 py-4 font-medium">状态</th>
-                                                    <th className="w-[90px] px-4 py-4 font-medium">费用</th>
-                                                    <th className="w-[100px] px-4 py-4 font-medium">触发人</th>
+                                                    <th className="w-[110px] px-4 py-4 font-medium">最近更新</th>
+                                                    <th className="w-[170px] px-4 py-4 font-medium">触发人</th>
                                                     <th className="w-[130px] px-4 py-4 font-medium">操作</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {visibleTasks.map((task) => (
-                                                    <tr key={task.id} className="border-b border-[#f0f1f5] text-[12px] text-[#1d2129] last:border-b-0 hover:bg-[#fafbff]">
-                                                        <td className="px-6 py-6 align-middle">
-                                                            <div className="text-[13px] font-medium text-[#1c2745]">{task.title}</div>
-                                                            <div className="mt-1.5 text-[11px] text-[#9ca4b7]">{task.id}</div>
-                                                        </td>
-                                                        <td className="px-4 py-6 align-middle">{task.node}</td>
-                                                        <td className="px-4 py-6 align-middle">{task.service}</td>
-                                                        <td className="px-4 py-6 align-middle">
-                                                            <div className="flex items-center gap-2">
-                                                                <div className="relative h-1.5 w-[174px] rounded-full bg-[#edf0f7]">
-                                                                    <div
-                                                                        className={`h-full rounded-full ${task.progress >= 100 ? 'bg-[#5ac25f]' : 'bg-[#2f74ff]'}`}
-                                                                        style={{ width: `${task.progress}%` }}
-                                                                    />
-                                                                    {task.progress >= 100 && (
-                                                                        <span className="absolute -right-1 top-1/2 flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center rounded-full bg-[#5ac25f] text-white">
-                                                                            <Check size={9} strokeWidth={3} />
-                                                                        </span>
-                                                                    )}
+                                                    <React.Fragment key={task.id}>
+                                                        <tr className="border-b border-[#f0f1f5] text-[12px] text-[#1d2129] hover:bg-[#fafbff]">
+                                                            <td className="px-6 py-6 align-middle">
+                                                                <div className="text-[13px] font-medium text-[#1c2745]">{task.title}</div>
+                                                                <div className="mt-1.5 text-[11px] text-[#9ca4b7]">{task.id}</div>
+                                                            </td>
+                                                            <td className="px-4 py-6 align-middle">{task.node}</td>
+                                                            <td className="px-4 py-6 align-middle">{task.service}</td>
+                                                            <td className="px-4 py-6 align-middle">
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="relative h-1.5 w-[174px] rounded-full bg-[#edf0f7]">
+                                                                        {task.progress === null ? (
+                                                                            task.statusTone === 'red' ? (
+                                                                                <div className="h-full w-full rounded-full bg-[#ffece8]" />
+                                                                            ) : (
+                                                                                <div className="h-full w-1/3 animate-pulse rounded-full bg-[#2f74ff]" />
+                                                                            )
+                                                                        ) : (
+                                                                            <div
+                                                                                className="h-full rounded-full bg-[#5ac25f]"
+                                                                                style={{ width: `${task.progress}%` }}
+                                                                            />
+                                                                        )}
+                                                                        {task.progress === 100 && (
+                                                                            <span className="absolute -right-1 top-1/2 flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center rounded-full bg-[#5ac25f] text-white">
+                                                                                <Check size={9} strokeWidth={3} />
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    <span className={`text-[11px] ${task.progress === 100 ? 'text-[#00b42a]' : 'text-[#4e5969]'}`}>
+                                                                        {task.progress === null
+                                                                            ? (task.statusTone === 'red' ? '未完成' : '进行中')
+                                                                            : `${task.progress}%`}
+                                                                    </span>
                                                                 </div>
-                                                                {task.progress < 100 && (
-                                                                    <span className="text-[11px] text-[#4e5969]">{task.progress}%</span>
+                                                            </td>
+                                                            <td className="px-4 py-6 align-middle">
+                                                                <span className={`inline-flex rounded-[3px] px-2 py-1 text-[11px] ${TASK_STATUS_STYLES[task.statusTone]}`}>{task.status}</span>
+                                                            </td>
+                                                            <td className="whitespace-nowrap px-4 py-6 align-middle">{task.updatedAt}</td>
+                                                            <td className="whitespace-nowrap px-4 py-6 align-middle">
+                                                                {task.actorKnown ? (
+                                                                    <div className="flex items-center gap-1.5">
+                                                                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#4558dc] text-[11px] text-white">
+                                                                            {task.actorName.slice(0, 1)}
+                                                                        </span>
+                                                                        <span className="max-w-[64px] truncate" title={task.actorName}>{task.actorName}</span>
+                                                                        {task.isMe && (
+                                                                            <span className="rounded-[3px] bg-[#e8f1ff] px-1 py-0.5 text-[10px] text-[#1677ff]">我</span>
+                                                                        )}
+                                                                        {ACTOR_ROLE_META[task.actorRole] && (
+                                                                            <span className={`rounded-[3px] px-1 py-0.5 text-[10px] ${ACTOR_ROLE_META[task.actorRole].badge}`}>
+                                                                                {ACTOR_ROLE_META[task.actorRole].label}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                ) : (
+                                                                    <span className="text-[#c9cdd4]" title="改造前的历史任务没有记录触发人">未记录</span>
                                                                 )}
-                                                            </div>
-                                                        </td>
-                                                        <td className="px-4 py-6 align-middle">
-                                                            <span className={`inline-flex rounded-[3px] px-2 py-1 text-[11px] ${TASK_STATUS_STYLES[task.statusTone]}`}>{task.status}</span>
-                                                        </td>
-                                                        <td className="whitespace-nowrap px-4 py-6 align-middle">{task.cost}</td>
-                                                        <td className="whitespace-nowrap px-4 py-6 align-middle">{task.trigger}</td>
-                                                        <td className="px-4 py-6 align-middle">
-                                                            <div className="flex items-center gap-6 whitespace-nowrap">
-                                                                <button type="button" onClick={() => setToast(`查看 ${task.id} 任务日志`)} className="text-[#2f74ff] transition-colors hover:text-[#5c8fff]">日志</button>
-                                                                <button
-                                                                    type="button"
-                                                                    disabled={!task.canRetry}
-                                                                    onClick={() => setToast(`已提交重试：${task.title}`)}
-                                                                    className="text-[#2f74ff] transition-colors hover:text-[#5c8fff] disabled:cursor-not-allowed disabled:text-[#c9cdd4]"
-                                                                >
-                                                                    重试
-                                                                </button>
-                                                            </div>
-                                                        </td>
-                                                    </tr>
+                                                            </td>
+                                                            <td className="px-4 py-6 align-middle">
+                                                                <div className="flex items-center gap-6 whitespace-nowrap">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setExpandedJobId((current) => (current === task.id ? null : task.id))}
+                                                                        className="text-[#2f74ff] transition-colors hover:text-[#5c8fff]"
+                                                                    >
+                                                                        {expandedJobId === task.id ? '收起' : '日志'}
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        disabled={!task.canRetry}
+                                                                        onClick={() => void handleRetryTask(task)}
+                                                                        className="text-[#2f74ff] transition-colors hover:text-[#5c8fff] disabled:cursor-not-allowed disabled:text-[#c9cdd4]"
+                                                                    >
+                                                                        重试
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                        {expandedJobId === task.id && (
+                                                            <tr className="border-b border-[#f0f1f5] bg-[#fafbff]">
+                                                                <td colSpan={8} className="px-6 py-5">
+                                                                    <div className="space-y-3 text-[12px] text-[#4e5969]">
+                                                                        {task.job.payload?.error && (
+                                                                            <div className="flex items-start gap-2 rounded-[6px] border border-[#ffccc7] bg-[#fff2f0] px-3 py-2 text-[#cf1322]">
+                                                                                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                                                                                <span>{String(task.job.payload.error)}</span>
+                                                                            </div>
+                                                                        )}
+                                                                        <div className="grid gap-x-8 gap-y-1.5 sm:grid-cols-2">
+                                                                            <div>
+                                                                                触发人：
+                                                                                <span className="text-[#1d2129]">
+                                                                                    {task.actorKnown
+                                                                                        ? `${task.actorName}${ACTOR_ROLE_META[task.actorRole] ? ` · ${ACTOR_ROLE_META[task.actorRole].label}` : ''}`
+                                                                                        : '未记录（改造前任务）'}
+                                                                                </span>
+                                                                            </div>
+                                                                            <div>触发账号：<span className="text-[#1d2129]">{task.actorId || '—'}</span></div>
+                                                                            <div>任务编号：<span className="text-[#1d2129]">{task.id}</span></div>
+                                                                            <div>服务端任务：<span className="text-[#1d2129]">{String(task.job.payload?.taskId || '—')}</span></div>
+                                                                            <div>提交时间：<span className="text-[#1d2129]">{task.job.startedAt ? new Date(task.job.startedAt).toLocaleString() : '—'}</span></div>
+                                                                            <div>结束时间：<span className="text-[#1d2129]">{task.job.payload?.finishedAt ? new Date(Number(task.job.payload.finishedAt)).toLocaleString() : '—'}</span></div>
+                                                                            <div>模型：<span className="text-[#1d2129]">{String(task.job.payload?.videoModel || task.job.payload?.imageModel || '—')}</span></div>
+                                                                            <div>参数：<span className="text-[#1d2129]">{String(task.job.payload?.resolution || '—')} · {String(task.job.payload?.aspectRatio || '—')}{(task.job.payload?.duration ? ` · ${task.job.payload.duration}s` : '')}</span></div>
+                                                                        </div>
+                                                                        {task.job.payload?.prompt && (
+                                                                            <div className="rounded-[6px] bg-white p-3 ring-1 ring-[#eef0f6]">
+                                                                                <div className="mb-1 text-[11px] text-[#9ca4b7]">提示词</div>
+                                                                                <div className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-[#1d2129]">{String(task.job.payload.prompt)}</div>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                        )}
+                                                    </React.Fragment>
                                                 ))}
                                                 {visibleTasks.length === 0 && (
                                                     <tr>
-                                                        <td colSpan={8} className="px-6 py-20 text-center text-[13px] text-[#9ca4b7]">暂无异常任务</td>
+                                                        <td colSpan={8} className="px-6 py-20 text-center text-[13px] text-[#9ca4b7]">
+                                                            {jobsLoading
+                                                                ? '正在加载任务…'
+                                                                : tasksAbnormalOnly
+                                                                    ? '暂无异常任务'
+                                                                    : '暂无生成任务。生成资产图、镜头视频或画布节点后，这里会自动出现对应的任务记录'}
+                                                        </td>
                                                     </tr>
                                                 )}
                                             </tbody>
                                         </table>
                                     </div>
-                                    <div className="flex h-[52px] items-center justify-end gap-2 border-t border-[#eef0f6] px-6">
-                                        <button type="button" disabled aria-label="上一页" className="flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-[4px] text-[#c9cdd4]">
-                                            <ChevronLeft size={17} />
-                                        </button>
-                                        <button type="button" aria-current="page" className="flex h-8 min-w-8 items-center justify-center rounded-[4px] border border-[#4558dc] bg-white px-2 text-[12px] text-[#4558dc]">1</button>
-                                        <button type="button" disabled aria-label="下一页" className="flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-[4px] text-[#c9cdd4]">
-                                            <ChevronRight size={17} />
-                                        </button>
+                                    <div className="flex h-[52px] items-center justify-between gap-2 border-t border-[#eef0f6] px-6 text-[12px] text-[#9ca4b7]">
+                                        <span>
+                                            共 {generationTasks.length} 条任务
+                                            {abnormalTaskCount > 0 ? `，其中 ${abnormalTaskCount} 条异常` : ''}
+                                        </span>
+                                        <span>每次生成尝试都会留痕，最多保留最近 200 条</span>
                                     </div>
                                 </section>
                             </div>
@@ -1470,7 +1765,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {VERSION_RECORDS.map((record) => (
+                                                {versionRecords.map((record) => (
                                                     <tr key={`${record.object}-${record.version}`} className="border-b border-[#f0f1f5] text-[12px] text-[#1d2129] last:border-b-0 hover:bg-[#fafbff]">
                                                         <td className="px-6 py-5 align-middle font-medium text-[#1c2745]">{record.object}</td>
                                                         <td className="px-4 py-5 align-middle">{record.version}</td>
@@ -1500,6 +1795,11 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                         </td>
                                                     </tr>
                                                 ))}
+                                                {versionRecords.length === 0 && (
+                                                    <tr>
+                                                        <td colSpan={7} className="px-6 py-20 text-center text-[13px] text-[#9ca4b7]">暂无版本记录，完成剧本解析后自动生成首个版本</td>
+                                                    </tr>
+                                                )}
                                             </tbody>
                                         </table>
                                     </div>
@@ -1546,7 +1846,7 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {REVIEW_RECORDS.map((record) => (
+                                                {reviewRecords.map((record) => (
                                                     <tr key={`${record.object}-${record.version}`} className="border-b border-[#f0f1f5] text-[12px] text-[#1d2129] last:border-b-0 hover:bg-[#fafbff]">
                                                         <td className="px-6 py-5 align-middle font-medium text-[#1c2745]">{record.object}</td>
                                                         <td className="px-4 py-5 align-middle">{record.version}</td>
@@ -1568,6 +1868,11 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                                         </td>
                                                     </tr>
                                                 ))}
+                                                {reviewRecords.length === 0 && (
+                                                    <tr>
+                                                        <td colSpan={8} className="px-6 py-20 text-center text-[13px] text-[#9ca4b7]">暂无审核记录，分镜拆分后自动进入分镜审核池</td>
+                                                    </tr>
+                                                )}
                                             </tbody>
                                         </table>
                                     </div>
@@ -1662,7 +1967,6 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ projectId,
                                         </div>
                                     </div>
                                 </section>
-
 
                             </div>
                         ) : (

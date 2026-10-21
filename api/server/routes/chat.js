@@ -105,7 +105,7 @@ router.post('/', async (req, res) => {
 // List all chat sessions
 router.get('/sessions', async (req, res) => {
     try {
-        const sessions = chatAgent.listSessions(req.query.scope);
+        const sessions = await chatAgent.listSessions(req.query.scope);
         res.json(sessions);
     } catch (error) {
         console.error("List sessions error:", error);
@@ -117,7 +117,7 @@ router.get('/sessions', async (req, res) => {
 router.delete('/sessions/:id', async (req, res) => {
     try {
         // deleteSession 对不存在的会话或非法 id 返回 false，避免误报成功
-        const deleted = chatAgent.deleteSession(req.params.id);
+        const deleted = await chatAgent.deleteSession(req.params.id);
         if (!deleted) {
             return res.status(404).json({ error: "Session not found" });
         }
@@ -131,7 +131,7 @@ router.delete('/sessions/:id', async (req, res) => {
 // Get full session data (for loading a specific chat)
 router.get('/sessions/:id', async (req, res) => {
     try {
-        const sessionData = chatAgent.getSessionData(req.params.id);
+        const sessionData = await chatAgent.getSessionData(req.params.id);
         if (!sessionData) {
             return res.status(404).json({ error: "Session not found" });
         }

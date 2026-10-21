@@ -36,11 +36,86 @@ export interface GenerateVideoParams {
   channel?: string; // 模型调用通道：free / project / workflow
 }
 
-/** 查询一个已提交生成任务的服务端落盘结果。页面刷新或离开后用于恢复结果。 */
-export const getGenerationStatus = async (nodeId: string): Promise<{ status: 'success' | 'pending'; resultUrl?: string }> => {
+/**
+ * 查询一个已提交生成任务的服务端落盘结果。页面刷新或离开后用于恢复结果。
+ * status 为 failed 表示服务端任务已明确失败（带 error 原因），调用方应停止轮询并展示失败。
+ */
+export const getGenerationStatus = async (
+  nodeId: string
+): Promise<{ status: 'success' | 'pending' | 'failed'; resultUrl?: string; error?: string }> => {
   const response = await fetch(`/api/generation-status/${encodeURIComponent(nodeId)}`);
   if (!response.ok) throw new Error('查询生成状态失败');
   return response.json();
+};
+
+// ============================================================================
+// ASYNC IMAGE（图片生成：提交 / 轮询分离）
+// ============================================================================
+
+export interface SubmitImageTaskResult {
+  taskId: string;
+  nodeId?: string | null;
+  status: string;
+}
+
+export type ImageTaskStatus = 'running' | 'succeeded' | 'failed' | 'notfound';
+
+export interface ImageTaskStatusResult {
+  status: ImageTaskStatus;
+  resultUrl?: string;
+  error?: string;
+}
+
+/**
+ * 提交图片生成任务：只创建任务并立即返回 taskId，不等生成完成。
+ * 批量生成时先并发提交全部任务，再统一轮询，避免「一个跑完才提交下一个」。
+ */
+export const submitImageTask = async (params: GenerateImageParams): Promise<SubmitImageTaskResult> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30 * 1000);
+
+  try {
+    const response = await fetch('/api/generate-image/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error || response.statusText);
+    }
+
+    return response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/** 查询一次图片任务状态（由调用方控制轮询节奏）。404 归一到 notfound，便于前端区分「需重新提交」。 */
+export const getImageTaskStatus = async (taskId: string): Promise<ImageTaskStatusResult> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30 * 1000);
+
+  try {
+    const response = await fetch(`/api/generate-image/status/${encodeURIComponent(taskId)}`, {
+      signal: controller.signal
+    });
+
+    if (response.status === 404) {
+      return { status: 'notfound' };
+    }
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error || response.statusText);
+    }
+
+    return response.json();
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 /**

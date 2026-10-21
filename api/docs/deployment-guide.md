@@ -1,7 +1,7 @@
-# TwitCanva 环境说明 & Docker 部署指南
+# TwitCanva 环境说明
 
-> 本文档记录本机当前的环境状态、两种 AI 生成方式的区别，以及后续「Docker 只跑云端 API」的迁移步骤。
-> 用途：方便以后快速回顾、重启环境、或搬 Docker。
+> 本文档记录本机当前的环境状态、两种 AI 生成方式的区别。
+> 用途：方便以后快速回顾、重启环境。
 
 ---
 
@@ -84,7 +84,6 @@ HF_HUB_DISABLE_XET=1
 | 后端 API | 8024 |
 | 前端（开发 Vite） | 8025 |
 | 相机角度（本地，需 24GB 显存，本机跑不了） | 8026 |
-| Docker（生产，前端+后端合并） | 8024 |
 
 ---
 
@@ -107,45 +106,7 @@ http://192.168.20.239:8025      # 局域网 IP
 
 ---
 
-## 6. Docker 迁移（只跑云端 API）
-
-> 决策：Docker 里只跑云端 API，本地模型（venv + SD 模型）不放进容器。
-
-### 6.1 已就绪的
-
-- `docker-compose.yml`：端口 `8024:8024`，密钥透传，挂载 `./library`
-- `Dockerfile`：node:20-alpine，build 前端 + 起 Node 服务，`EXPOSE 8024`
-- `.dockerignore`：已排除 `venv` / `models` / `scripts` / `modal` / `server/python` / `*.bat` / `*.sh`（避免 8GB 本地环境打进镜像）
-- 前端相对路径：生产环境同源，天然兼容
-
-### 6.2 迁移步骤
-
-```bash
-# 1. 填 .env 的 API Key（GEMINI_API_KEY 必填，其余按需）
-
-# 2. 构建并启动
-docker compose up -d --build
-
-# 3. 访问（单端口，前后端合并）
-#    http://localhost:8024
-#    http://192.168.20.239:8024
-
-# 4. 停止
-docker compose down
-```
-
-### 6.3 已知坑（遇到时处理）
-
-1. **sharp 在 Alpine 上缺共享库**：若容器启动报 sharp 加载错误，在 Dockerfile 加：
-   ```dockerfile
-   RUN apk add --no-cache libc6-compat
-   ```
-2. **Docker 里没有本地模型**：`/api/local-models/*` 在容器里会报「venv 未配置」，属预期（云端路线用不到本地模型）。
-3. **局域网访问**：从其它设备访问需放行 Windows 防火墙 8024。
-
----
-
-## 7. 常用命令速查
+## 6. 常用命令速查
 
 ```bash
 # 本地开发
@@ -156,16 +117,11 @@ npm.cmd run build              # 构建生产前端到 dist/
 # 本地模型
 npm.cmd run setup:local-models # 用 uv 重建 venv + 装依赖（已改成 uv 版）
 venv\Scripts\python.exe scripts\inference.py --model_path models\checkpoints\v1-5-pruned-emaonly.safetensors --prompt "..." --output out.png
-
-# Docker
-docker compose up -d --build
-docker compose down
-docker logs -f twitcanva-app
 ```
 
 ---
 
-## 8. 注意事项
+## 7. 注意事项
 
 - **别删** `venv/`（4.36GB，本地生成靠它）和 `models/`（SD 模型）。
 - 系统 Python（3.12/3.11）磁盘上已不存在，`python` 命令报错属正常，项目已完全不依赖它，走 uv。

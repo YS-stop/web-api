@@ -1021,12 +1021,15 @@ export default function App() {
   }
 
   // 项目详情子页面（/projects/:projectId）
+  // 支持 ?tab=assets 直达「项目资产」标签（工作流页「资产确认」步骤跳转用）
   const projectDetailMatch = location.pathname.match(/^\/projects\/([^/]+)$/);
   if (projectDetailMatch) {
+    const tabParam = new URLSearchParams(location.search).get('tab') || undefined;
     return (
       <ProjectDetailPage
         projectId={decodeURIComponent(projectDetailMatch[1])}
         user={user}
+        initialTab={tabParam}
         onBack={() => navigate('/')}
         onEnterWorkflow={(pid, episode) =>
           // 项目详情「进入画布」进的是新的制作画布（/canvas-studio），并带上集号
@@ -1074,6 +1077,8 @@ export default function App() {
         onEnterCanvas={(pid) =>
           navigate(`/canvas/${encodeURIComponent(pid)}${workflowEpisode ? `?episode=${workflowEpisode}` : ''}`)
         }
+        // 「资产确认」已迁至项目详情 →「项目资产」标签，这里直达该标签
+        onGoProjectAssets={(pid) => navigate(`/projects/${encodeURIComponent(pid)}?tab=assets`)}
       />
     );
   }

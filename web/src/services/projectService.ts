@@ -31,6 +31,10 @@ export interface Project {
     createdAt: string;
     updatedAt: string;
     createdBy: string;
+    /** 归属组长 id（空表示未分配）；组长自建项目时为自己 */
+    leaderId?: string;
+    /** 归属组长姓名（列表接口 LEFT JOIN users 带出） */
+    leaderName?: string;
     /** 新建项目时产生的「剧本分集 + 资产」分析结果（项目画布展示用） */
     scriptAnalysis?: ScriptAnalysis | null;
 }
@@ -48,6 +52,8 @@ export interface ProjectEditableFields {
     scriptName?: string;
     dramaName?: string;
     totalEpisodes?: number;
+    /** 创建时指派归属组长（仅管理员 / 项目主管可用；组长自建时后端强制为自己） */
+    leaderId?: string;
     /** 新建项目时随创建请求一并保存的剧本分集/资产（不参与编辑表单） */
     scriptAnalysis?: ScriptAnalysis | null;
 }
@@ -167,6 +173,17 @@ export async function createProject(data: ProjectEditableFields): Promise<Projec
     return r.project;
 }
 
+// 分配项目归属组长（管理员 / 项目主管）；leaderId 传空表示收回为「未分配」
+export async function assignProjectLeader(id: string, leaderId: string): Promise<Project> {
+    const resp = await fetch('/api/projects/' + id + '/leader', {
+        method: 'PUT',
+        headers: authHeaders(true),
+        body: JSON.stringify({ leaderId }),
+    });
+    const r = await handle<{ project: Project }>(resp);
+    return r.project;
+}
+
 // 直接编辑项目（管理员 / 项目主管）
 export async function updateProject(id: string, fields: ProjectEditableFields): Promise<Project> {
     const resp = await fetch('/api/projects/' + id, {
@@ -209,6 +226,14 @@ export async function reviewChangeRequest(requestId: string, approve: boolean): 
 
 // 权限判断（与后端一致）
 export function canEditProject(role?: string): boolean {
+    return role === 'admin' || role === 'project_manager';
+}
+/** 是否可新建项目（组员不可新建） */
+export function canCreateProject(role?: string): boolean {
+    return role === 'admin' || role === 'project_manager' || role === 'team_leader';
+}
+/** 是否可分配项目归属组长（管理员 / 项目主管） */
+export function canAssignProject(role?: string): boolean {
     return role === 'admin' || role === 'project_manager';
 }
 export function canRequestChange(role?: string): boolean {

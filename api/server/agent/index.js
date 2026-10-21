@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import { createChatGraph, generateTopicTitle, streamModel } from "./graph/chatGraph.js";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { resolveInside } from '../utils/safePath.js';
+import { isDbEnabled, isDualWrite, one, many, exec } from '../db/index.js';
 
 // ============================================================================
 // FILE PATHS
@@ -152,31 +153,80 @@ function getSessionPath(sessionId) {
     return resolveInside(CHATS_DIR, `${sessionId}.json`);
 }
 
+/** 时间字段统一输出 ISO 字符串（DB 返回 Date，文件里本来就是字符串） */
+function toIso(value) {
+    if (!value) return null;
+    return value instanceof Date ? value.toISOString() : String(value);
+}
+
 /**
- * Save a session to disk
+ * Save a session.
+ * DB_DRIVER=db/dual 时写 chat_sessions；file 模式下仍写 library/chats/{id}.json。
+ * dual 模式两份都写，切换驱动后历史不丢。
  */
-function saveSession(sessionId, session, scope) {
+async function saveSession(sessionId, session, scope) {
     const filePath = getSessionPath(sessionId);
     if (!filePath) {
         throw new Error('Invalid session id');
     }
+
+    const createdAt = session.createdAt instanceof Date
+        ? session.createdAt.toISOString()
+        : (session.createdAt || new Date().toISOString());
+
     const data = {
         id: sessionId,
         scope: scope || 'free',
-        topic: session.topic,
-        createdAt: session.createdAt,
+        topic: session.topic ?? null,
+        createdAt,
         updatedAt: new Date().toISOString(),
         messages: serializeMessages(session.messages)
     };
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+
+    if (isDbEnabled()) {
+        await exec(
+            `INSERT INTO chat_sessions (id, scope, topic, messages, created_at, updated_at)
+             VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+             ON CONFLICT (id) DO UPDATE SET
+                scope      = EXCLUDED.scope,
+                topic      = EXCLUDED.topic,
+                messages   = EXCLUDED.messages,
+                updated_at = EXCLUDED.updated_at`,
+            [data.id, data.scope, data.topic, JSON.stringify(data.messages), data.createdAt, data.updatedAt],
+        );
+    }
+
+    if (!isDbEnabled() || isDualWrite()) {
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    }
 }
 
 /**
- * Load a session from disk
+ * Load a session（结构：{ messages, topic, createdAt }）
  */
-function loadSession(sessionId) {
+async function loadSession(sessionId) {
     const filePath = getSessionPath(sessionId);
-    if (!filePath || !fs.existsSync(filePath)) {
+    if (!filePath) return null;
+
+    if (isDbEnabled()) {
+        try {
+            const row = await one(
+                'SELECT topic, messages, created_at FROM chat_sessions WHERE id = $1',
+                [sessionId],
+            );
+            if (!row) return null;
+            return {
+                messages: deserializeMessages(Array.isArray(row.messages) ? row.messages : []),
+                topic: row.topic,
+                createdAt: row.created_at ? new Date(row.created_at) : new Date(),
+            };
+        } catch (err) {
+            console.error(`Failed to load session ${sessionId} from db:`, err.message);
+            return null;
+        }
+    }
+
+    if (!fs.existsSync(filePath)) {
         return null;
     }
 
@@ -197,16 +247,16 @@ function loadSession(sessionId) {
 /**
  * Get or create a chat session
  * @param {string} sessionId - Unique session identifier
- * @returns {object} Session object
+ * @returns {Promise<object>} Session object
  */
-export function getSession(sessionId) {
+export async function getSession(sessionId) {
     // Check cache first
     if (sessionCache.has(sessionId)) {
         return sessionCache.get(sessionId);
     }
 
-    // Try to load from disk
-    const loaded = loadSession(sessionId);
+    // Try to load from storage
+    const loaded = await loadSession(sessionId);
     if (loaded) {
         sessionCache.set(sessionId, loaded);
         return loaded;
@@ -225,25 +275,57 @@ export function getSession(sessionId) {
 /**
  * Delete a chat session
  * @param {string} sessionId - Session to delete
- * @returns {boolean} Whether session existed and was deleted
+ * @returns {Promise<boolean>} Whether session existed and was deleted
  */
-export function deleteSession(sessionId) {
+export async function deleteSession(sessionId) {
     sessionCache.delete(sessionId);
 
     const filePath = getSessionPath(sessionId);
     if (!filePath) return false;
-    if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        return true;
+
+    let deleted = false;
+
+    if (isDbEnabled()) {
+        const result = await exec('DELETE FROM chat_sessions WHERE id = $1', [sessionId]);
+        deleted = result.rowCount > 0;
     }
-    return false;
+
+    if (!isDbEnabled() || isDualWrite()) {
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            deleted = true;
+        }
+    }
+
+    return deleted;
 }
 
 /**
- * List all sessions from disk (for chat history)
- * @returns {Array} Array of session summaries
+ * List all sessions (for chat history)
+ * @param {string} [scope] - 按归属域过滤，缺省返回全部
+ * @returns {Promise<Array>} Array of session summaries
  */
-export function listSessions(scope) {
+export async function listSessions(scope) {
+    if (isDbEnabled()) {
+        const rows = await many(
+            `SELECT id, scope, topic, created_at, updated_at,
+                    CASE WHEN jsonb_typeof(messages) = 'array'
+                         THEN jsonb_array_length(messages) ELSE 0 END AS message_count
+             FROM chat_sessions
+             WHERE ($1::text IS NULL OR scope = $1)
+             ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST`,
+            [scope || null],
+        );
+        return rows.map((row) => ({
+            id: row.id,
+            scope: row.scope || 'free',
+            topic: row.topic || 'New Chat',
+            createdAt: toIso(row.created_at),
+            updatedAt: toIso(row.updated_at),
+            messageCount: Number(row.message_count) || 0,
+        }));
+    }
+
     if (!fs.existsSync(CHATS_DIR)) {
         return [];
     }
@@ -278,11 +360,35 @@ export function listSessions(scope) {
 /**
  * Get full session data (for loading a specific chat)
  * @param {string} sessionId - Session ID
- * @returns {object|null} Full session data with messages
+ * @returns {Promise<object|null>} Full session data with messages
  */
-export function getSessionData(sessionId) {
+export async function getSessionData(sessionId) {
     const filePath = getSessionPath(sessionId);
-    if (!filePath || !fs.existsSync(filePath)) {
+    if (!filePath) return null;
+
+    if (isDbEnabled()) {
+        try {
+            const row = await one(
+                `SELECT id, scope, topic, messages, created_at, updated_at
+                 FROM chat_sessions WHERE id = $1`,
+                [sessionId],
+            );
+            if (!row) return null;
+            return {
+                id: row.id,
+                scope: row.scope || 'free',
+                topic: row.topic,
+                createdAt: toIso(row.created_at),
+                updatedAt: toIso(row.updated_at),
+                messages: Array.isArray(row.messages) ? row.messages : [],
+            };
+        } catch (err) {
+            console.error(`Failed to load session data ${sessionId} from db:`, err.message);
+            return null;
+        }
+    }
+
+    if (!fs.existsSync(filePath)) {
         return null;
     }
 
@@ -308,7 +414,7 @@ export function getSessionData(sessionId) {
  * @returns {Promise<object>} { response: string, topic?: string }
  */
 export async function sendMessage(sessionId, content, media, apiKey, provider = 'gemini', scope = 'free') {
-    const session = getSession(sessionId);
+    const session = await getSession(sessionId);
     const graph = createChatGraph();
 
     // Debug: Log session state
@@ -409,8 +515,8 @@ export async function sendMessage(sessionId, content, media, apiKey, provider = 
         }
     }
 
-    // Save session to disk after each message
-    saveSession(sessionId, session, scope);
+    // Save session after each message（DB / 文件由驱动开关决定）
+    await saveSession(sessionId, session, scope);
 
     return {
         response: aiResponse.content.toString(),
@@ -424,7 +530,7 @@ export async function sendMessage(sessionId, content, media, apiKey, provider = 
 // ============================================================================
 
 export async function streamChat(sessionId, content, media, apiKey, provider = 'gemini', onChunk, isAborted, scope = 'free') {
-    const session = getSession(sessionId);
+    const session = await getSession(sessionId);
 
     let messageContent;
     if (media && Array.isArray(media) && media.length > 0) {
@@ -485,7 +591,7 @@ export async function streamChat(sessionId, content, media, apiKey, provider = '
         }
     }
 
-    saveSession(sessionId, session, scope);
+    await saveSession(sessionId, session, scope);
 
     return { response: fullResponse, topic, messageCount: session.messages.length };
 }

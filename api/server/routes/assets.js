@@ -15,6 +15,8 @@ import fs from 'fs';
 import path from 'path';
 import { IMAGES_DIR, VIDEOS_DIR } from '../utils/paths.js';
 import { resolveInside } from '../utils/safePath.js';
+import { isDbEnabled, exec, many, one } from '../db/index.js';
+import { mediaKind as dbKind, upsertMediaAsset, rowToMediaAsset } from '../db/mediaAssets.js';
 
 const router = express.Router();
 
@@ -38,7 +40,6 @@ router.post('/:type', async (req, res) => {
         const id = Date.now().toString();
         const ext = type === 'images' ? 'png' : 'mp4';
         const filename = `${id}.${ext}`;
-        const metaFilename = `${id}.json`;
 
         // Save the asset file
         const base64Data = data.replace(/^data:[^;]+;base64,/, '');
@@ -52,7 +53,8 @@ router.post('/:type', async (req, res) => {
             createdAt: new Date().toISOString(),
             type
         };
-        fs.writeFileSync(path.join(targetDir, metaFilename), JSON.stringify(metadata, null, 2));
+        // 元数据只写数据库（media_assets），不再落盘 <id>.json
+        await upsertMediaAsset(metadata, type);
 
         res.json({ success: true, id, filename, url: `/library/${type}/${filename}` });
     } catch (error) {
@@ -70,6 +72,27 @@ router.get('/:type', async (req, res) => {
 
         if (!VALID_TYPES.includes(type)) {
             return res.status(400).json({ error: 'Invalid asset type' });
+        }
+
+        // db 模式：元数据从 PostgreSQL 读取（媒体文件仍在 library 目录）
+        if (isDbEnabled()) {
+            const kind = dbKind(type);
+            const totalRow = await one('SELECT count(*)::int AS total FROM media_assets WHERE kind = $1', [kind]);
+            const total = Number(totalRow?.total || 0);
+
+            let sql = 'SELECT * FROM media_assets WHERE kind = $1 ORDER BY created_at DESC NULLS LAST';
+            const params = [kind];
+            if (limit > 0) {
+                params.push(limit, offset);
+                sql += ` LIMIT $2 OFFSET $3`;
+            }
+            const rows = await many(sql, params);
+            const assets = rows.map(rowToMediaAsset);
+
+            if (limit > 0) {
+                return res.json({ assets, total, hasMore: offset + limit < total });
+            }
+            return res.json(assets);
         }
 
         const targetDir = resolveDir(type);
@@ -134,7 +157,11 @@ router.delete('/:type/:id', async (req, res) => {
 
         // Read metadata to get the actual filename (may differ from ID)
         let assetFilename = null;
-        if (fs.existsSync(metaPath)) {
+        if (isDbEnabled()) {
+            const row = await one('SELECT filename FROM media_assets WHERE id = $1', [id]);
+            if (row) assetFilename = row.filename;
+        }
+        if (!assetFilename && fs.existsSync(metaPath)) {
             try {
                 const metadata = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
                 assetFilename = metadata.filename;
@@ -156,6 +183,11 @@ router.delete('/:type/:id', async (req, res) => {
         if (fs.existsSync(metaPath)) {
             fs.unlinkSync(metaPath);
             console.log(`Deleted metadata file: ${metaPath}`);
+        }
+
+        // Delete the metadata row
+        if (isDbEnabled()) {
+            await exec('DELETE FROM media_assets WHERE id = $1', [id]);
         }
 
         res.json({ success: true });

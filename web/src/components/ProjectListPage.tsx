@@ -18,8 +18,9 @@ import {
     Check,
 } from 'lucide-react';
 import { CreateProjectModal, CreateProjectData } from './modals/CreateProjectModal';
-import { Project, fetchProjects, createProject, fetchChangeRequests, canApprove, CONTENT_TYPES } from '../services/projectService';
+import { Project, fetchProjects, createProject, fetchChangeRequests, canApprove, canCreateProject, canAssignProject, CONTENT_TYPES } from '../services/projectService';
 import { computeProjectProgress, ProjectProgress } from '../services/projectProgress';
+import { persistUiState, fetchProjectProgress } from '../services/projectStateService';
 
 const ROLE_LABELS: Record<string, string> = {
     admin: '管理员',
@@ -155,6 +156,8 @@ export const ProjectListPage: React.FC<ProjectListPageProps> = ({ user, onEnterC
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState('');
     const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+    // 可指派的组长列表（管理员 / 项目主管新建项目时使用）
+    const [leaders, setLeaders] = useState<{ id: string; name: string }[]>([]);
     const [pendingCount, setPendingCount] = useState(0);
     const [lastLoadedAt, setLastLoadedAt] = useState(Date.now());
     // 每 30s 触发一次，驱动「数据刷新于 X 分钟前」重新计算
@@ -185,6 +188,8 @@ export const ProjectListPage: React.FC<ProjectListPageProps> = ({ user, onEnterC
     }, [visibleColumns, loading, projects.length]);
 
     const canApproveRole = canApprove(user?.role);
+    const canCreateRole = canCreateProject(user?.role);
+    const canAssignRole = canAssignProject(user?.role);
 
     const loadProjects = async () => {
         setLoading(true);
@@ -214,6 +219,21 @@ export const ProjectListPage: React.FC<ProjectListPageProps> = ({ user, onEnterC
             .catch(() => setPendingCount(0));
     }, [canApproveRole]);
 
+    // 管理员 / 项目主管：拉取组长列表，用于新建项目时指派归属组长
+    useEffect(() => {
+        if (!canAssignRole) return;
+        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('twitcanva_auth_token') || '' : '';
+        fetch('/api/users', { headers: { Authorization: 'Bearer ' + token } })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error('加载成员失败'))))
+            .then((data) => {
+                const list = (data.users || [])
+                    .filter((u: any) => u.role === 'team_leader')
+                    .map((u: any) => ({ id: u.id, name: u.name || String(u.id).slice(0, 6) }));
+                setLeaders(list);
+            })
+            .catch(() => setLeaders([]));
+    }, [canAssignRole]);
+
     const handleCreateProject = async (data: CreateProjectData) => {
         try {
             await createProject(data);
@@ -223,14 +243,31 @@ export const ProjectListPage: React.FC<ProjectListPageProps> = ({ user, onEnterC
         }
     };
 
-    // ---------- 项目进度：按本地实际制作数据动态计算 ----------
+    // ---------- 项目进度：优先用服务端聚合结果，失败时回退本地缓存推导 ----------
+    const [serverProgress, setServerProgress] = useState<Record<string, ProjectProgress>>({});
+
+    useEffect(() => {
+        let cancelled = false;
+        if (projects.length === 0) {
+            setServerProgress({});
+            return undefined;
+        }
+        (async () => {
+            const remote = (await fetchProjectProgress()) as Record<string, ProjectProgress>;
+            if (!cancelled) setServerProgress(remote);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [projects.length]);
+
     const progressMap = useMemo(() => {
         const map: Record<string, ProjectProgress> = {};
         projects.forEach((p) => {
-            map[p.id] = computeProjectProgress(p.id, p.totalEpisodes);
+            map[p.id] = serverProgress[p.id] || computeProjectProgress(p.id, p.totalEpisodes);
         });
         return map;
-    }, [projects]);
+    }, [projects, serverProgress]);
 
     // ---------- 摘要指标（全部由真实数据汇总） ----------
     const stats = useMemo(() => {
@@ -405,18 +442,20 @@ export const ProjectListPage: React.FC<ProjectListPageProps> = ({ user, onEnterC
                                 )}
                                 <button
                                     onClick={onOpenFreeCanvas}
-                                    className="flex items-center gap-1.5 h-10 px-4 rounded-lg border border-[#d9d9d9] bg-white text-[rgba(0,0,0,0.88)] text-base hover:border-[#4558dc] hover:text-[#4558dc] transition-colors shadow-[0_2px_0_rgba(0,0,0,0.02)]"
+                                    className="flex items-center gap-1.5 h-10 px-4 rounded-lg border border-[#d9d9d9] bg-white text-[rgba(0,0,0,0.88)] text-base hover:border-[#4558dc] hover:text-[#4558dc] transition-colors shadow-[0_2px_0_rgba(0,0,0,0.02)] hidden"
                                 >
                                     <PenTool size={16} />
                                     自由画布
                                 </button>
-                                <button
-                                    onClick={() => setIsCreateModalOpen(true)}
-                                    className="flex items-center gap-2 h-10 px-[15px] rounded-lg bg-[#4558dc] hover:bg-[#6d82e8] active:bg-[#2f3cb5] text-white text-base transition-colors shadow-[0_2px_0_rgba(5,72,255,0.06)]"
-                                >
-                                    <Plus size={16} />
-                                    新建制作项目
-                                </button>
+                                {canCreateRole && (
+                                    <button
+                                        onClick={() => setIsCreateModalOpen(true)}
+                                        className="flex items-center gap-2 h-10 px-[15px] rounded-lg bg-[#4558dc] hover:bg-[#6d82e8] active:bg-[#2f3cb5] text-white text-base transition-colors shadow-[0_2px_0_rgba(5,72,255,0.06)]"
+                                    >
+                                        <Plus size={16} />
+                                        新建制作项目
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -604,6 +643,9 @@ export const ProjectListPage: React.FC<ProjectListPageProps> = ({ user, onEnterC
                                                             <td className="px-4 py-4 align-middle text-[#47516c]">
                                                                 <div>{p.owner}</div>
                                                                 <small className="block mt-1 text-xs text-[#9299aa]">{p.department}</small>
+                                                                <small className="block mt-0.5 text-[11px] text-[#4558dc]">
+                                                                    组长：{p.leaderName || (p.leaderId ? '已分配' : '未分配')}
+                                                                </small>
                                                             </td>
                                                         )}
                                                         {isColVisible('stage') && (
@@ -665,9 +707,10 @@ export const ProjectListPage: React.FC<ProjectListPageProps> = ({ user, onEnterC
                                                                         onClick={() => {
                                                                             // 首次点击即视为「开始」，之后按钮变为「进入工作流」
                                                                             try { localStorage.setItem(`project-started:${p.id}`, '1'); } catch { /* ignore */ }
+                                                                            persistUiState(p.id, 'project-started', '1');
                                                                             onEnterWorkflow(p.id);
                                                                         }}
-                                                                        className="h-8 px-[10px] rounded-md text-sm text-[#1677ff] hover:text-[#4096ff] hover:bg-[rgba(0,0,0,0.04)] transition-colors whitespace-nowrap"
+                                                                        className="h-8 px-[10px] rounded-md text-sm text-[#1677ff] hover:text-[#4096ff] hover:bg-[rgba(0,0,0,0.04)] transition-colors whitespace-nowrap hidden"
                                                                     >
                                                                         {started ? '进入工作流' : '开始'}
                                                                     </button>
@@ -726,6 +769,8 @@ export const ProjectListPage: React.FC<ProjectListPageProps> = ({ user, onEnterC
                 isOpen={isCreateModalOpen}
                 onClose={() => setIsCreateModalOpen(false)}
                 onCreate={handleCreateProject}
+                userRole={user?.role}
+                leaders={leaders}
             />
 
         </div>

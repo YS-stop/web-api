@@ -19,6 +19,7 @@ import {
     resolveLineVoice,
     type CharacterVoiceSource,
 } from './dubbingVoice';
+import { persistDubbing } from './projectStateService';
 
 // ============================================================================
 // 类型
@@ -102,6 +103,12 @@ export const saveDubbing = (projectId: string, store: DubbingStore): void => {
         localStorage.setItem(storeKey(projectId), JSON.stringify(store));
     } catch {
         /* 容量超限 / 隐私模式：静默失败 */
+    }
+    // 按集异步落库（数据库为准，失败不影响本地继续操作）
+    for (const [episode, payload] of Object.entries(store)) {
+        const ep = Number(episode);
+        if (!Number.isFinite(ep) || ep <= 0) continue;
+        persistDubbing(projectId, ep, payload as unknown as Record<string, unknown>);
     }
 };
 

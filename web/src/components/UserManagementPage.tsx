@@ -11,6 +11,8 @@ interface ManagedUser {
     lastLoginAt: string;
     createdAt: string;
     permissions?: Record<string, boolean>;
+    /** 组员所属组长 id（后端 users.leader_id） */
+    leaderId?: string;
 }
 
 const ROLE_META: Record<string, { label: string; rank: number; badge: string; dot: string }> = {
@@ -71,22 +73,52 @@ function distribute<T>(items: T[], buckets: number): T[][] {
 function buildOrg(users: ManagedUser[]): { admins: OrgNode[]; tree: OrgNode[] } {
     const admins = users.filter(u => u.role === 'admin').map(toOrgNode);
     const pms = users.filter(u => u.role === 'project_manager').map(toOrgNode);
-    const tls = users.filter(u => u.role === 'team_leader').map(toOrgNode);
-    const members = users.filter(u => u.role === 'user').map(toOrgNode);
+    const tls = users.filter(u => u.role === 'team_leader');
+    const members = users.filter(u => u.role === 'user');
 
-    // 组员 → 组长
-    const memberGroups = distribute(members, tls.length);
-    const tlNodes = tls.map((tl, i) => ({
-        ...tl,
-        children: memberGroups[i] || [],
+    // 组员 → 按真实 leaderId 挂到对应组长，不再是平均分配
+    const tlNodes: OrgNode[] = tls.map((tl) => ({
+        ...toOrgNode(tl),
+        children: members.filter((m) => (m.leaderId || '') === tl.id).map(toOrgNode),
     }));
 
-    // 组长 → 项目主管
-    const tlGroups = distribute(tlNodes, pms.length);
+    // 没有归属（或归属的组长已不存在）的组员集中展示，避免凭空消失
+    const unassigned = members
+        .filter((m) => !m.leaderId || !tls.some((tl) => tl.id === m.leaderId))
+        .map(toOrgNode);
+
+    // 组长 → 项目主管（角色层级兜底；组长若有 leaderId 指向主管则优先挂到该主管）
+    const tlGroups = distribute(tlNodes, Math.max(1, pms.length));
     const pmNodes = pms.map((pm, i) => ({
         ...pm,
-        children: tlGroups[i] || [],
+        children: (tlGroups[i] || []).slice(),
     }));
+    tls.forEach((tl, i) => {
+        const target = pmNodes.find((pm) => pm.id === tl.leaderId);
+        const node = tlNodes[i];
+        if (target && node && !target.children?.some((c) => c.id === node.id)) {
+            target.children = [...(target.children || []), node];
+            // 从默认分配的桶里移除，避免重复
+            pmNodes.forEach((pm) => {
+                if (pm !== target) pm.children = (pm.children || []).filter((c) => c.id !== node.id);
+            });
+        }
+    });
+
+    if (unassigned.length > 0) {
+        pmNodes.push({
+            id: '__unassigned__',
+            name: '未分配组员',
+            avatarUrl: '',
+            role: 'team_leader',
+            children: unassigned,
+        });
+    }
+
+    // 没有主管时，组长直接作为顶层，保证架构树不为空
+    if (pmNodes.length === 0) {
+        return { admins, tree: tlNodes };
+    }
 
     return { admins, tree: pmNodes };
 }
@@ -288,7 +320,7 @@ export const UserManagementPage: React.FC<UserManagementPageProps> = ({ user, on
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
-    const [form, setForm] = useState<{ role: string; status: string; permissions: Record<string, boolean> }>({ role: 'user', status: 'active', permissions: {} });
+    const [form, setForm] = useState<{ role: string; status: string; permissions: Record<string, boolean>; leaderId: string }>({ role: 'user', status: 'active', permissions: {}, leaderId: '' });
 
     const token = typeof localStorage !== 'undefined' ? localStorage.getItem('twitcanva_auth_token') || '' : '';
     const operatorRole = user?.role;
@@ -364,6 +396,7 @@ export const UserManagementPage: React.FC<UserManagementPageProps> = ({ user, on
             role: u.role,
             status: u.status,
             permissions: { ...(DEFAULT_PERMISSIONS_BY_ROLE[u.role] || DEFAULT_PERMISSIONS_BY_ROLE.user), ...(u.permissions || {}) },
+            leaderId: u.leaderId || '',
         });
         setDrawerOpen(true);
     };
@@ -390,11 +423,23 @@ export const UserManagementPage: React.FC<UserManagementPageProps> = ({ user, on
             const resp = await fetch('/api/users/' + editingId, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-                body: JSON.stringify(form),
+                body: JSON.stringify({ role: form.role, status: form.status, permissions: form.permissions }),
             });
             if (!resp.ok) {
                 const data = await resp.json().catch(() => ({}));
                 throw new Error(data.error || ('保存失败 (' + resp.status + ')'));
+            }
+            // 组员的所属组长单独走接口（角色变更后不再适用）
+            if (editingUser?.role === 'user' && form.role === 'user' && (form.leaderId || '') !== (editingUser.leaderId || '')) {
+                const lr = await fetch('/api/users/' + editingId + '/leader', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                    body: JSON.stringify({ leaderId: form.leaderId || '' }),
+                });
+                if (!lr.ok) {
+                    const data = await lr.json().catch(() => ({}));
+                    throw new Error(data.error || '保存归属组长失败');
+                }
             }
             setDrawerOpen(false);
             setEditingId(null);
@@ -714,6 +759,25 @@ export const UserManagementPage: React.FC<UserManagementPageProps> = ({ user, on
                             </select>
                             <p className="text-xs text-slate-400 mt-1.5">你只能分配不超过自己权限的角色</p>
                         </div>
+
+                        {/* 所属组长：组员归属哪一位组长（决定他能看到哪些项目） */}
+                        {form.role === 'user' && (operatorRole === 'admin' || operatorRole === 'project_manager') && (
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1.5">所属组长</label>
+                                <select
+                                    value={form.leaderId || ''}
+                                    onChange={(e) => setForm({ ...form, leaderId: e.target.value })}
+                                    className="w-full h-9 px-3 rounded-lg border border-slate-200 text-sm bg-white outline-none focus:border-[#1677ff] transition-colors"
+                                >
+                                    <option value="">未分配（看不到任何项目）</option>
+                                    {users.filter((u) => u.role === 'team_leader').map((tl) => (
+                                        <option key={tl.id} value={tl.id}>{tl.name}</option>
+                                    ))}
+                                </select>
+                                <p className="text-xs text-slate-400 mt-1.5">组员只能看到所属组长名下的项目</p>
+                            </div>
+                        )}
+
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1.5">状态</label>
                             <div className="flex gap-2">

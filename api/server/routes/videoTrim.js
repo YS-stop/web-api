@@ -17,6 +17,7 @@ import { spawn } from 'child_process';
 import { isFFmpegAvailable } from '../utils/ffmpeg.js';
 import { VIDEOS_DIR } from '../utils/paths.js';
 import { resolveInside } from '../utils/safePath.js';
+import { upsertMediaAsset } from '../db/mediaAssets.js';
 
 const router = express.Router();
 
@@ -141,7 +142,8 @@ router.post('/', async (req, res) => {
             createdAt: new Date().toISOString(),
             type: 'videos'
         };
-        fs.writeFileSync(path.join(VIDEOS_DIR, metaFilename), JSON.stringify(metadata, null, 2));
+        // 元数据只写数据库（media_assets），不再落盘 <id>.json
+        await upsertMediaAsset(metadata, 'videos');
 
         const resultUrl = `/library/videos/${outputFilename}`;
         console.log(`[Video Trim] Saved: ${resultUrl}`);

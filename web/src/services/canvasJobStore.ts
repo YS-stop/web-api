@@ -12,6 +12,8 @@
  * 轮询把结果认领回来，避免重复消耗额度。
  */
 
+import { persistJob, removePersistedJob } from './projectStateService';
+
 export interface CanvasJob {
     /** 发起生成的节点 id（后端以它为产物文件名） */
     nodeId: string;
@@ -69,25 +71,75 @@ export const addCanvasJob = (projectId: string, job: CanvasJob) => {
     const jobs = loadCanvasJobs(projectId).filter((j) => j.nodeId !== job.nodeId);
     jobs.push(job);
     writeAll(projectId, jobs);
+    persistJob(projectId, {
+        id: job.nodeId,
+        kind: 'canvas-video',
+        episode: job.episode,
+        status: 'running',
+        payload: job as unknown as Record<string, unknown>,
+        startedAt: job.startedAt,
+    });
 };
 
 /** 更新任务信息（例如提交后补上服务端 taskId） */
 export const updateCanvasJob = (projectId: string, nodeId: string, patch: Partial<CanvasJob>) => {
     const jobs = loadCanvasJobs(projectId).map((j) => (j.nodeId === nodeId ? { ...j, ...patch } : j));
     writeAll(projectId, jobs);
+    const updated = jobs.find((j) => j.nodeId === nodeId);
+    if (updated) {
+        persistJob(projectId, {
+            id: updated.nodeId,
+            kind: 'canvas-video',
+            episode: updated.episode,
+            status: 'running',
+            payload: updated as unknown as Record<string, unknown>,
+            startedAt: updated.startedAt,
+        });
+    }
 };
 
-/** 任务结束（成功认领 / 失败 / 节点已删除）后移除 */
-export const removeCanvasJob = (projectId: string, nodeId: string) => {
+/**
+ * 任务结束：把终态写进后端台账，再从本地「待认领」队列移除。
+ *
+ * 之前无论成功失败都直接删台账，导致「生成任务」页永远看不到历史与失败原因。
+ * 现在成功 / 失败都会保留一条记录，只有「节点已删除」这类放弃场景才真正删除。
+ */
+export const removeCanvasJob = (
+    projectId: string,
+    nodeId: string,
+    outcome: 'succeeded' | 'failed' | 'discard' = 'succeeded',
+    error?: string,
+) => {
+    const job = loadCanvasJobs(projectId).find((j) => j.nodeId === nodeId);
     const jobs = loadCanvasJobs(projectId).filter((j) => j.nodeId !== nodeId);
     writeAll(projectId, jobs);
+
+    if (outcome === 'discard' || !job) {
+        removePersistedJob(projectId, nodeId);
+        return;
+    }
+
+    persistJob(projectId, {
+        id: job.nodeId,
+        kind: 'canvas-video',
+        episode: job.episode,
+        status: outcome,
+        payload: {
+            ...job,
+            ...(error ? { error } : {}),
+            finishedAt: Date.now(),
+        },
+        startedAt: job.startedAt,
+    });
 };
 
 /** 清空某项目的全部任务（排障用） */
 export const clearCanvasJobs = (projectId: string) => {
+    const ids = readAll(projectId).map((job) => job.nodeId).filter(Boolean);
     try {
         localStorage.removeItem(storeKey(projectId));
     } catch {
         /* ignore */
     }
+    for (const id of ids) removePersistedJob(projectId, id);
 };

@@ -22,12 +22,13 @@
  * - 文件读写走 jsonStore：原子写 + 串行化，避免并发丢任务。
  */
 
-import fs from 'fs';
 import path from 'path';
 import { LIBRARY_DIR, VIDEOS_DIR } from '../utils/paths.js';
 import { readJson, updateJson } from '../utils/jsonStore.js';
 import { saveBufferToFile } from '../utils/imageHelpers.js';
 import { createSeedanceTask, querySeedanceTask } from './doubao.js';
+import { isDbEnabled, isDualWrite, exec, many, one } from '../db/index.js';
+import { upsertMediaAsset } from '../db/mediaAssets.js';
 
 // ============================================================================
 // 配置
@@ -55,19 +56,105 @@ const timers = new Map();
 // 存储
 // ============================================================================
 
-/** 读取全部任务 */
-function readTasks() {
+/** 数据库行 → 任务对象（字段名与文件版保持一致） */
+function rowToTask(row) {
+    return {
+        taskId: row.task_id,
+        nodeId: row.node_id,
+        status: row.status,
+        modelId: row.model_id,
+        prompt: row.prompt,
+        aspectRatio: row.aspect_ratio,
+        resolution: row.resolution,
+        duration: row.duration,
+        channel: row.channel,
+        apiKey: row.api_key,
+        errorCount: row.error_count,
+        error: row.error ?? undefined,
+        resultUrl: row.result_url ?? undefined,
+        createdAt: row.created_at === null ? undefined : Number(row.created_at),
+        updatedAt: row.updated_at === null ? undefined : Number(row.updated_at),
+        finishedAt: row.finished_at === null ? undefined : Number(row.finished_at),
+    };
+}
+
+/** 读取全部任务（文件版） */
+function readTasksFromFile() {
     const data = readJson(TASKS_FILE, {});
     return data && typeof data === 'object' ? data : {};
 }
 
-/** 写入单个任务（串行化，避免并发覆盖） */
+/** 读取全部任务：db 模式返回 { taskId: task } */
+async function readTasks() {
+    if (!isDbEnabled()) return readTasksFromFile();
+
+    const rows = await many('SELECT * FROM video_tasks');
+    const map = {};
+    for (const row of rows) {
+        const task = rowToTask(row);
+        map[task.taskId] = task;
+    }
+    return map;
+}
+
+/** 读取单个任务（db 模式下避免全表扫描） */
+async function readTask(taskId) {
+    if (!isDbEnabled()) return readTasksFromFile()[taskId];
+    const row = await one('SELECT * FROM video_tasks WHERE task_id = $1', [taskId]);
+    return row ? rowToTask(row) : undefined;
+}
+
+/** 写入单个任务（db 模式 UPSERT；dual 模式同时保留文件） */
 async function saveTask(task) {
-    await updateJson(TASKS_FILE, (current) => {
-        const all = current && typeof current === 'object' ? current : {};
-        all[task.taskId] = task;
-        return all;
-    }, {});
+    if (isDbEnabled()) {
+        await exec(
+            `INSERT INTO video_tasks
+                (task_id, node_id, status, model_id, prompt, aspect_ratio, resolution, duration,
+                 channel, api_key, error_count, error, result_url, created_at, updated_at, finished_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+             ON CONFLICT (task_id) DO UPDATE SET
+                node_id = EXCLUDED.node_id,
+                status = EXCLUDED.status,
+                model_id = EXCLUDED.model_id,
+                prompt = EXCLUDED.prompt,
+                aspect_ratio = EXCLUDED.aspect_ratio,
+                resolution = EXCLUDED.resolution,
+                duration = EXCLUDED.duration,
+                channel = EXCLUDED.channel,
+                api_key = EXCLUDED.api_key,
+                error_count = EXCLUDED.error_count,
+                error = EXCLUDED.error,
+                result_url = EXCLUDED.result_url,
+                updated_at = EXCLUDED.updated_at,
+                finished_at = EXCLUDED.finished_at`,
+            [
+                task.taskId,
+                task.nodeId || null,
+                task.status || '',
+                task.modelId || '',
+                task.prompt || '',
+                task.aspectRatio || '',
+                task.resolution || '',
+                Number(task.duration) || 0,
+                task.channel || '',
+                task.apiKey || '',
+                Number(task.errorCount) || 0,
+                task.error || null,
+                task.resultUrl || null,
+                task.createdAt || null,
+                task.updatedAt || null,
+                task.finishedAt || null,
+            ],
+        );
+    }
+
+    if (!isDbEnabled() || isDualWrite()) {
+        await updateJson(TASKS_FILE, (current) => {
+            const all = current && typeof current === 'object' ? current : {};
+            all[task.taskId] = task;
+            return all;
+        }, {});
+    }
 }
 
 /** 对外可见的任务视图（剔除密钥等内部字段） */
@@ -110,7 +197,7 @@ function schedule(taskId, delay = POLL_INTERVAL) {
 
 /** 任务失败收尾 */
 async function finalizeFailed(taskId, error) {
-    const task = readTasks()[taskId];
+    const task = await readTask(taskId);
     if (!task || task.status !== 'running') return;
     await saveTask({
         ...task,
@@ -146,7 +233,8 @@ async function finalizeSucceeded(task, videoUrl) {
         createdAt: new Date().toISOString(),
         type: 'videos',
     };
-    fs.writeFileSync(path.join(VIDEOS_DIR, `${metadataId}.json`), JSON.stringify(metadata, null, 2));
+    // 元数据只写数据库（media_assets），不再落盘 <nodeId>.json
+    await upsertMediaAsset(metadata, 'videos');
 
     await saveTask({
         ...task,
@@ -165,7 +253,7 @@ async function finalizeSucceeded(task, videoUrl) {
 
 /** 单次轮询 */
 async function pollTask(taskId) {
-    const task = readTasks()[taskId];
+    const task = await readTask(taskId);
     if (!task || task.status !== 'running') return;
 
     // 超时兜底
@@ -278,14 +366,23 @@ export async function submitSeedanceVideoTask(params) {
 }
 
 /** 查询任务（不含 apiKey） */
-export function getVideoTask(taskId) {
-    const task = readTasks()[taskId];
+export async function getVideoTask(taskId) {
+    const task = await readTask(taskId);
     return publicTask(task);
 }
 
 /** 按 nodeId 找最近一次任务（诊断/恢复用） */
-export function findTaskByNodeId(nodeId) {
-    const tasks = readTasks();
+export async function findTaskByNodeId(nodeId) {
+    if (isDbEnabled()) {
+        const row = await one(
+            `SELECT * FROM video_tasks WHERE node_id = $1
+             ORDER BY created_at DESC NULLS LAST LIMIT 1`,
+            [nodeId],
+        );
+        return publicTask(row ? rowToTask(row) : null);
+    }
+
+    const tasks = readTasksFromFile();
     return publicTask(
         Object.values(tasks)
             .filter((t) => t && t.nodeId === nodeId)
@@ -296,23 +393,35 @@ export function findTaskByNodeId(nodeId) {
 /** 清理过期的已完成任务 */
 export async function cleanupOldTasks() {
     const now = Date.now();
-    await updateJson(TASKS_FILE, (current) => {
-        const all = current && typeof current === 'object' ? current : {};
-        for (const [id, task] of Object.entries(all)) {
-            if (!task) { delete all[id]; continue; }
-            if (task.status !== 'running' && now - (task.finishedAt || task.updatedAt || 0) > FINISHED_TTL) {
-                delete all[id];
+
+    if (isDbEnabled()) {
+        await exec(
+            `DELETE FROM video_tasks
+             WHERE status <> 'running'
+               AND COALESCE(finished_at, updated_at, 0) < $1`,
+            [now - FINISHED_TTL],
+        );
+    }
+
+    if (!isDbEnabled() || isDualWrite()) {
+        await updateJson(TASKS_FILE, (current) => {
+            const all = current && typeof current === 'object' ? current : {};
+            for (const [id, task] of Object.entries(all)) {
+                if (!task) { delete all[id]; continue; }
+                if (task.status !== 'running' && now - (task.finishedAt || task.updatedAt || 0) > FINISHED_TTL) {
+                    delete all[id];
+                }
             }
-        }
-        return all;
-    }, {});
+            return all;
+        }, {});
+    }
 }
 
 /**
  * 服务启动时恢复未完成任务：进程重启（--watch / 部署）后继续轮询并落盘。
  */
 export async function restoreVideoTasks() {
-    const tasks = readTasks();
+    const tasks = await readTasks();
     const running = Object.values(tasks).filter((t) => t && t.status === 'running');
 
     let resumed = 0;

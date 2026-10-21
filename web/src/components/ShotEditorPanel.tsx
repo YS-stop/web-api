@@ -48,6 +48,8 @@ import type { AnalyzedEpisode, ShotItem } from '../services/scriptAnalysisServic
 import { splitShots } from '../services/scriptAnalysisService';
 import { generateImage, generateVideo, getGenerationStatus, submitVideoTask, getVideoTaskStatus } from '../services/generationService';
 import { STYLE_OPTIONS, FORM_OPTIONS, buildImagePrompt, buildVideoPrompt, resolveStyleByContentType, resolveFormByContentType } from '../services/stylePresets';
+import { persistJob } from '../services/projectStateService';
+import { finishJob } from '../services/generationTaskService';
 // 台词表演提示与画布侧共用一套拼法，避免「面板生成」和「画布生成」两处提示词漂移
 import {
     composeModelVideoPrompt,
@@ -171,6 +173,8 @@ interface VideoGenerationJob {
     /** 异步任务 ID（Seedance 提交后返回），刷新后据此继续轮询 */
     taskId?: string;
     startedAt: number;
+    /** 提交时的提示词：任务台账展示与失败排查用 */
+    prompt?: string;
 }
 
 /** 已提交、待轮询的视频任务（批量两阶段流程使用） */
@@ -693,6 +697,23 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
                         const status = await getVideoTaskStatus(job.taskId);
                         if (status.status === 'succeeded') resultUrl = status.resultUrl;
                         else if (status.status === 'failed') {
+                            finishJob(
+                                projectId,
+                                {
+                                    id: job.id,
+                                    kind: 'shot-video',
+                                    episode: job.episode,
+                                    startedAt: job.startedAt,
+                                    payload: {
+                                        episode: job.episode,
+                                        shotNumber: job.shotNumber,
+                                        prompt: job.prompt,
+                                        taskId: job.taskId,
+                                    },
+                                },
+                                'failed',
+                                { error: status.error || '未知错误' },
+                            );
                             settled.push(job);
                             continue;
                         }
@@ -705,6 +726,23 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
                     if (job.previousUrl && job.previousUrl !== resultUrl) pushHistory(key, job.previousUrl);
                     patchShot(job.shotNumber, { videoUrl: resultUrl }, job.episode);
                     pushHistory(key, resultUrl, job.id);
+                    finishJob(
+                        projectId,
+                        {
+                            id: job.id,
+                            kind: 'shot-video',
+                            episode: job.episode,
+                            startedAt: job.startedAt,
+                            payload: {
+                                episode: job.episode,
+                                shotNumber: job.shotNumber,
+                                prompt: job.prompt,
+                                taskId: job.taskId,
+                            },
+                        },
+                        'succeeded',
+                        { resultUrl },
+                    );
                     settled.push(job);
                     setGeneratingKeys((current) => {
                         const next = new Set(current);
@@ -714,6 +752,23 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
                 } catch {
                     // 异步任务已过期 / 服务重启丢失（404）：移除任务，避免无限轮询
                     if (job.taskId) {
+                        finishJob(
+                            projectId,
+                            {
+                                id: job.id,
+                                kind: 'shot-video',
+                                episode: job.episode,
+                                startedAt: job.startedAt,
+                                payload: {
+                                    episode: job.episode,
+                                    shotNumber: job.shotNumber,
+                                    prompt: job.prompt,
+                                    taskId: job.taskId,
+                                },
+                            },
+                            'failed',
+                            { error: '任务已过期或生成服务重启，结果丢失' },
+                        );
                         settled.push(job);
                         setGeneratingKeys((current) => {
                             const next = new Set(current);
@@ -736,6 +791,40 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
         };
     }, [pendingVideoJobs]); // 函数仅通过 React setter 更新状态
 
+    /**
+     * 上报分镜视频任务到后端台账（「生成任务」页的数据源）。
+     * 提交时写 running，结束时写终态；失败原因必须一起留下，
+     * 否则任务失败后记录被清掉，任务页只会看到「任务凭空消失」。
+     */
+    const reportShotJob = (
+        job: VideoGenerationJob,
+        status: 'running' | 'succeeded' | 'failed',
+        extra: Record<string, unknown> = {},
+    ) => {
+        const base = {
+            id: job.id,
+            kind: 'shot-video',
+            episode: job.episode,
+            startedAt: job.startedAt,
+            payload: {
+                episode: job.episode,
+                shotNumber: job.shotNumber,
+                prompt: (job.prompt || '').slice(0, 400),
+                taskId: job.taskId,
+                videoModel,
+                aspectRatio: aspect,
+                resolution,
+                duration,
+                ...extra,
+            },
+        };
+        if (status === 'running') {
+            persistJob(projectId, { ...base, status });
+        } else {
+            finishJob(projectId, base, status);
+        }
+    };
+
     const generateVideoForShot = async (
         shot: ShotState,
         epNo = activeEpisode,
@@ -750,6 +839,7 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
             shotNumber: shot.shotNumber,
             previousUrl: shot.videoUrl,
             startedAt: Date.now(),
+            prompt,
         };
         // 按片段标记生成状态：只有该片段自己的预览显示「生成中」，切到其他片段不受影响
         setGeneratingKeys((prev) => new Set(prev).add(genKey));
@@ -757,6 +847,7 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
         const stored = loadStore(projectId);
         saveStore(projectId, { ...stored, pendingVideoJobs: [...(stored.pendingVideoJobs || []), job] });
         setPendingVideoJobs((jobs) => [...jobs, job]);
+        reportShotJob(job, 'running');
         try {
             // Seedance 的「首帧 first_frame」与「参考图 reference_image」语义不同且互斥：
             //   - first_frame：这张图直接成为视频第一帧，画面会从它原样开始；
@@ -785,9 +876,11 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
             if (shot.videoUrl && shot.videoUrl !== url) pushHistory(genKey, shot.videoUrl);
             patchShot(shot.shotNumber, { videoUrl: url }, epNo);
             pushHistory(`${epNo}:${shot.shotNumber}`, url, job.id);
+            reportShotJob(job, 'succeeded', { resultUrl: url });
             return url;
         } catch (e: any) {
             setError(`片段${shot.shotNumber} 生成失败：${e?.message || '未知错误'}`);
+            reportShotJob(job, 'failed', { error: e?.message || '未知错误' });
             return null;
         } finally {
             setPendingVideoJobs((jobs) => jobs.filter((item) => item.id !== job.id));
@@ -816,10 +909,12 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
             shotNumber: shot.shotNumber,
             previousUrl: shot.videoUrl,
             startedAt: Date.now(),
+            prompt,
         };
         setGeneratingKeys((prev) => new Set(prev).add(genKey));
         // 先落盘 pending job，刷新后即使还没拿到 taskId 也能恢复
         setPendingVideoJobs((jobs) => [...jobs, job]);
+        reportShotJob(job, 'running');
 
         try {
             const hasRefs = refs.length > 0;
@@ -841,9 +936,12 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
             // 标记为「主动轮询中」，恢复定时器据此跳过，避免同一任务被查两次
             activeTaskIdsRef.current.add(taskId);
             setPendingVideoJobs((jobs) => jobs.map((j) => (j.id === job.id ? submittedJob : j)));
+            // 补上服务端任务 id：任务页能据此查到真实失败原因
+            reportShotJob(submittedJob, 'running');
             return { taskId, job: submittedJob, shot, epNo };
         } catch (e: any) {
             setError(`片段${shot.shotNumber} 提交失败：${e?.message || '未知错误'}`);
+            reportShotJob(job, 'failed', { error: e?.message || '提交视频任务失败' });
             setPendingVideoJobs((jobs) => jobs.filter((j) => j.id !== job.id));
             setGeneratingKeys((prev) => {
                 const next = new Set(prev);
@@ -871,18 +969,22 @@ export const ShotEditorPanel: React.FC<ShotEditorPanelProps> = ({
                     if (task.shot.videoUrl && task.shot.videoUrl !== url) pushHistory(genKey, task.shot.videoUrl);
                     patchShot(task.shot.shotNumber, { videoUrl: url }, task.epNo);
                     pushHistory(genKey, url, task.job.id);
+                    reportShotJob(task.job, 'succeeded', { resultUrl: url });
                     return url;
                 }
                 if (status.status === 'failed') {
                     setError(`片段${task.shot.shotNumber} 生成失败：${status.error || '未知错误'}`);
+                    reportShotJob(task.job, 'failed', { error: status.error || '未知错误' });
                     return null;
                 }
                 await new Promise((resolve) => setTimeout(resolve, interval));
             }
             setError(`片段${task.shot.shotNumber} 生成超时（超过 11 分钟）`);
+            reportShotJob(task.job, 'failed', { error: '生成超时（超过 11 分钟）' });
             return null;
         } catch (e: any) {
             setError(`片段${task.shot.shotNumber} 查询状态失败：${e?.message || '未知错误'}`);
+            reportShotJob(task.job, 'failed', { error: e?.message || '查询任务状态失败' });
             return null;
         } finally {
             activeTaskIdsRef.current.delete(task.taskId);

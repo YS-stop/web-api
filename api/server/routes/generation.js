@@ -13,15 +13,18 @@ import { randomBytes } from 'crypto';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const archiver = require('archiver');
-import { generateKlingVideo, generateKlingImage, generateKlingMultiImage } from '../services/kling.js';
-import { generateGeminiImage, generateVeoVideo } from '../services/gemini.js';
+import { generateKlingVideo } from '../services/kling.js';
+import { generateVeoVideo } from '../services/gemini.js';
 import { generateHailuoVideo } from '../services/hailuo.js';
-import { generateOpenAIImage } from '../services/openai.js';
-import { generateSeedanceVideo, generateSeedreamImage, getMaxReferenceImages } from '../services/doubao.js';
-import { submitSeedanceVideoTask, getVideoTask } from '../services/videoTaskRunner.js';
+import { generateSeedanceVideo, getMaxReferenceImages } from '../services/doubao.js';
+import { submitSeedanceVideoTask, getVideoTask, findTaskByNodeId } from '../services/videoTaskRunner.js';
+import { generateImageBuffer } from '../services/imageGeneration.js';
+import { submitImageTask, getImageTask } from '../services/imageTaskRunner.js';
 import { resolveImageToBase64, saveBufferToFile } from '../utils/imageHelpers.js';
 import { getKey, withConcurrency } from '../services/modelChannel.js';
 import { resolveInside } from '../utils/safePath.js';
+import { upsertMediaAsset, getMediaAsset } from '../db/mediaAssets.js';
+import { isDbEnabled } from '../db/index.js';
 
 const router = express.Router();
 
@@ -32,176 +35,20 @@ const router = express.Router();
 router.post('/generate-image', async (req, res) => {
     try {
         const { nodeId, prompt, aspectRatio, resolution, imageBase64: rawImageBase64, imageModel, klingReferenceMode, klingFaceIntensity, klingSubjectIntensity, channel } = req.body;
-        const { KLING_ACCESS_KEY, KLING_SECRET_KEY, IMAGES_DIR } = req.app.locals;
+        const { IMAGES_DIR } = req.app.locals;
 
-        // Determine provider
-        const isKlingModel = imageModel && imageModel.startsWith('kling-');
-        const isOpenAIModel = imageModel && imageModel.startsWith('gpt-image-');
-        const isSeedreamModel = imageModel && imageModel.startsWith('doubao-seedream');
-
-        let imageBuffer;
-        let imageFormat = 'png';
-
-        if (isKlingModel) {
-            // --- KLING AI IMAGE GENERATION ---
-            if (!KLING_ACCESS_KEY || !KLING_SECRET_KEY) {
-                return res.status(500).json({
-                    error: "Kling API credentials not configured. Add KLING_ACCESS_KEY and KLING_SECRET_KEY to .env"
-                });
-            }
-
-            console.log(`Using Kling AI model for image: ${imageModel}`);
-
-            // Resolve images if provided
-            let resolvedImages = null;
-            if (rawImageBase64) {
-                const rawImages = Array.isArray(rawImageBase64) ? rawImageBase64 : [rawImageBase64];
-                resolvedImages = rawImages.map(img => resolveImageToBase64(img)).filter(Boolean);
-            }
-
-            let klingImageUrl;
-
-            // Determine which API to use based on model and reference images:
-            // - kling-v1-5: Uses standard API with image_reference parameter
-            // - kling-v2, kling-v2-1: Use Multi-Image API (image_reference not supported)
-            const isV2Model = imageModel === 'kling-v2' || imageModel === 'kling-v2-1' || imageModel === 'kling-v2-new';
-            const hasReferenceImages = resolvedImages && resolvedImages.length > 0;
-
-            if (hasReferenceImages && isV2Model) {
-                // V2 models: Use Multi-Image API for image-to-image
-                console.log(`Using Kling Multi-Image API for ${imageModel} with ${resolvedImages.length} subject image(s)`);
-                klingImageUrl = await withConcurrency('KLING', channel, () => generateKlingMultiImage({
-                    prompt,
-                    subjectImages: resolvedImages,
-                    modelId: imageModel,
-                    aspectRatio,
-                    resolution,
-                    accessKey: KLING_ACCESS_KEY,
-                    secretKey: KLING_SECRET_KEY
-                }));
-            } else if (hasReferenceImages && resolvedImages.length > 1) {
-                // Multiple images with non-V2 model: Use Multi-Image API
-                console.log(`Using Kling Multi-Image API with ${resolvedImages.length} subject images`);
-                klingImageUrl = await withConcurrency('KLING', channel, () => generateKlingMultiImage({
-                    prompt,
-                    subjectImages: resolvedImages,
-                    modelId: imageModel,
-                    aspectRatio,
-                    resolution,
-                    accessKey: KLING_ACCESS_KEY,
-                    secretKey: KLING_SECRET_KEY
-                }));
-            } else {
-                // V1.5 or text-to-image: Use standard API (V1.5 supports image_reference)
-                klingImageUrl = await withConcurrency('KLING', channel, () => generateKlingImage({
-                    prompt,
-                    imageBase64: resolvedImages,
-                    modelId: imageModel,
-                    aspectRatio,
-                    resolution,
-                    klingReferenceMode,
-                    klingFaceIntensity,
-                    klingSubjectIntensity,
-                    accessKey: KLING_ACCESS_KEY,
-                    secretKey: KLING_SECRET_KEY
-                }));
-            }
-
-            // Download from Kling's URL
-            const imageResponse = await fetch(klingImageUrl);
-            if (!imageResponse.ok) {
-                throw new Error('Failed to download image from Kling');
-            }
-            imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-
-            if (klingImageUrl.includes('.jpg') || klingImageUrl.includes('.jpeg')) {
-                imageFormat = 'jpg';
-            }
-
-        } else if (isOpenAIModel) {
-            // --- OPENAI GPT IMAGE GENERATION ---
-            const OPENAI_API_KEY = getKey('OPENAI', channel);
-            if (!OPENAI_API_KEY) {
-                return res.status(500).json({
-                    error: "OpenAI API key not configured. Add OPENAI_API_KEY to .env"
-                });
-            }
-
-            console.log(`Using OpenAI GPT Image model: ${imageModel}`);
-
-            // Resolve images if provided
-            let imageBase64Array = null;
-            if (rawImageBase64) {
-                const rawImages = Array.isArray(rawImageBase64) ? rawImageBase64 : [rawImageBase64];
-                imageBase64Array = rawImages.map(img => resolveImageToBase64(img)).filter(Boolean);
-            }
-
-            imageBuffer = await withConcurrency('OPENAI', channel, () => generateOpenAIImage({
-                prompt,
-                imageBase64Array,
-                aspectRatio,
-                resolution,
-                apiKey: OPENAI_API_KEY
-            }));
-
-        } else if (isSeedreamModel) {
-            // --- DOUBAO SEEDREAM IMAGE GENERATION ---
-            const SEEDREAM_API_KEY = getKey('SEEDREAM', channel);
-            if (!SEEDREAM_API_KEY) {
-                return res.status(500).json({
-                    error: "SEEDREAM_API_KEY not configured. Add SEEDREAM_API_KEY to .env"
-                });
-            }
-
-            console.log(`Using Seedream model: ${imageModel}`);
-
-            // 多参考图（图生图）：逐个把文件 URL 解析为 base64 data URI，过滤解析失败项
-            let imageBase64Array = null;
-            if (rawImageBase64) {
-                const rawImages = Array.isArray(rawImageBase64) ? rawImageBase64 : [rawImageBase64];
-                imageBase64Array = rawImages.map((img) => resolveImageToBase64(img)).filter(Boolean);
-            }
-
-            const seedreamUrl = await withConcurrency('SEEDREAM', channel, () => generateSeedreamImage({
-                prompt,
-                aspectRatio,
-                imageBase64: imageBase64Array,
-                apiKey: SEEDREAM_API_KEY,
-                modelId: imageModel
-            }));
-
-            // Download from Seedream's URL
-            const imageResponse = await fetch(seedreamUrl);
-            if (!imageResponse.ok) {
-                throw new Error('Failed to download image from Seedream');
-            }
-            imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-
-            if (seedreamUrl.includes('.jpg') || seedreamUrl.includes('.jpeg')) {
-                imageFormat = 'jpg';
-            }
-
-        } else {
-            // --- GEMINI IMAGE GENERATION (Default) ---
-            const GEMINI_API_KEY = getKey('GEMINI', channel);
-            if (!GEMINI_API_KEY) {
-                return res.status(500).json({ error: "Server missing API Key config" });
-            }
-
-            let imageBase64Array = null;
-            if (rawImageBase64) {
-                const rawImages = Array.isArray(rawImageBase64) ? rawImageBase64 : [rawImageBase64];
-                imageBase64Array = rawImages.map(img => resolveImageToBase64(img)).filter(Boolean);
-            }
-
-            imageBuffer = await withConcurrency('GEMINI', channel, () => generateGeminiImage({
-                prompt,
-                imageBase64Array,
-                aspectRatio,
-                resolution,
-                apiKey: GEMINI_API_KEY
-            }));
-        }
+        // 统一走共享生成逻辑（与后台任务队列同源，避免 provider 分支两处维护）
+        const { imageBuffer, imageFormat } = await generateImageBuffer({
+            prompt,
+            imageModel,
+            aspectRatio,
+            resolution,
+            imageBase64: rawImageBase64,
+            klingReferenceMode,
+            klingFaceIntensity,
+            klingSubjectIntensity,
+            channel,
+        });
 
         // Save to library - use unique filename to preserve previous generations
         const saved = saveBufferToFile(imageBuffer, IMAGES_DIR, 'img', imageFormat);
@@ -218,7 +65,8 @@ router.post('/generate-image', async (req, res) => {
             createdAt: new Date().toISOString(),
             type: 'images'
         };
-        fs.writeFileSync(path.join(IMAGES_DIR, `${metadataId}.json`), JSON.stringify(metadata, null, 2));
+        // 元数据只写数据库（media_assets），不再落盘 <id>.json
+        await upsertMediaAsset(metadata, 'images');
 
         console.log(`Image saved: ${saved.url} (model: ${imageModel || 'gemini-pro'})`);
         return res.json({ resultUrl: saved.url });
@@ -226,6 +74,70 @@ router.post('/generate-image', async (req, res) => {
     } catch (error) {
         console.error("Server Image Gen Error:", error);
         res.status(500).json({ error: error.message || "Image generation failed" });
+    }
+});
+
+// ============================================================================
+// IMAGE GENERATION (ASYNC)
+// 提交后由服务端后台队列生成并落盘（services/imageTaskRunner.js），
+// 前端只查状态：即使页面关闭 / 进程重启，任务也会继续跑完。
+// ============================================================================
+
+/**
+ * 提交图片生成任务：只创建任务并立即返回 taskId，不在请求内等待生成。
+ */
+router.post('/generate-image/submit', async (req, res) => {
+    try {
+        const {
+            nodeId, prompt, aspectRatio, resolution, imageBase64, imageModel,
+            klingReferenceMode, klingFaceIntensity, klingSubjectIntensity, channel,
+        } = req.body;
+
+        if (!prompt) {
+            return res.status(400).json({ error: '缺少 prompt' });
+        }
+
+        const task = await submitImageTask({
+            nodeId,
+            prompt,
+            aspectRatio,
+            resolution,
+            imageModel,
+            channel,
+            imageBase64,
+            klingReferenceMode,
+            klingFaceIntensity,
+            klingSubjectIntensity,
+        });
+
+        console.log(`[Image Async] 任务已提交: ${task.taskId} (nodeId=${nodeId || '-'})`);
+        return res.json({ taskId: task.taskId, nodeId: task.nodeId, status: task.status });
+    } catch (error) {
+        console.error('[Image Async] 提交失败:', error);
+        return res.status(500).json({ error: error.message || '提交图片任务失败' });
+    }
+});
+
+/**
+ * 查询图片生成任务状态（由服务端后台队列推进，本接口只读持久化记录）。
+ */
+router.get('/generate-image/status/:taskId', async (req, res) => {
+    try {
+        const task = await getImageTask(req.params.taskId);
+        if (!task) {
+            return res.status(404).json({ error: '任务不存在或已过期' });
+        }
+
+        if (task.status === 'running') {
+            return res.json({ status: 'running' });
+        }
+        if (task.status === 'failed') {
+            return res.json({ status: 'failed', error: task.error || '图片生成失败' });
+        }
+        return res.json({ status: 'succeeded', resultUrl: task.resultUrl });
+    } catch (error) {
+        console.error('[Image Async] 查询失败:', error);
+        return res.status(500).json({ error: error.message || '查询图片任务失败' });
     }
 });
 
@@ -456,7 +368,8 @@ router.post('/generate-video', async (req, res) => {
             createdAt: new Date().toISOString(),
             type: 'videos'
         };
-        fs.writeFileSync(path.join(VIDEOS_DIR, `${metadataId}.json`), JSON.stringify(metadata, null, 2));
+        // 元数据只写数据库（media_assets），不再落盘 <id>.json
+        await upsertMediaAsset(metadata, 'videos');
 
         console.log(`Video saved: ${saved.url} (model: ${videoModel || 'veo-3.1'})`);
         return res.json({ resultUrl: saved.url });
@@ -547,7 +460,7 @@ router.post('/generate-video/submit', async (req, res) => {
  */
 router.get('/generate-video/status/:taskId', async (req, res) => {
     try {
-        const task = getVideoTask(req.params.taskId);
+        const task = await getVideoTask(req.params.taskId);
         if (!task) {
             return res.status(404).json({ error: '任务不存在或已过期' });
         }
@@ -585,16 +498,47 @@ router.get('/generation-status/:nodeId', async (req, res) => {
             return res.status(400).json({ error: 'Invalid node id' });
         }
 
-        // Check images metadata
+        // 1) 数据库为准：media_assets 里同一 id 即该节点的生成结果
+        if (isDbEnabled()) {
+            try {
+                const asset = await getMediaAsset(nodeId);
+                if (asset && asset.url) {
+                    return res.json({
+                        status: 'success',
+                        resultUrl: asset.url,
+                        type: asset.type === 'images' ? 'image' : 'video',
+                        createdAt: asset.createdAt,
+                    });
+                }
+            } catch (error) {
+                console.warn('[generation-status] 查库失败，回退文件:', error.message);
+            }
+        }
+
+        // 2) 回退文件：兼容 db 模式上线前生成的历史产物
         if (fs.existsSync(imageMetaPath)) {
             const meta = JSON.parse(fs.readFileSync(imageMetaPath, 'utf8'));
             return res.json({ status: 'success', resultUrl: `/library/images/${meta.filename}`, type: 'image', createdAt: meta.createdAt });
         }
 
-        // Check videos metadata
         if (fs.existsSync(videoMetaPath)) {
             const meta = JSON.parse(fs.readFileSync(videoMetaPath, 'utf8'));
             return res.json({ status: 'success', resultUrl: `/library/videos/${meta.filename}`, type: 'video', createdAt: meta.createdAt });
+        }
+
+        // 3) 任务已明确失败时把原因带回前端：
+        //    否则前端只能看到 pending 一直轮询，直到自身超时才报错（节点长时间转圈）
+        try {
+            const videoTask = await findTaskByNodeId(nodeId);
+            if (videoTask?.status === 'failed') {
+                return res.json({ status: 'failed', error: videoTask.error || '视频生成失败' });
+            }
+            const imageTask = await getImageTask(nodeId);
+            if (imageTask?.status === 'failed') {
+                return res.json({ status: 'failed', error: imageTask.error || '图片生成失败' });
+            }
+        } catch (error) {
+            console.warn('[generation-status] 查询任务状态失败:', error.message);
         }
 
         res.json({ status: 'pending' });

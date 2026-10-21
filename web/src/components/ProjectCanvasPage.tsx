@@ -36,6 +36,7 @@ import {
     Layers,
 } from 'lucide-react';
 import { Project, fetchProject } from '../services/projectService';
+import { hydrateProjectState, persistUiState } from '../services/projectStateService';
 import { AnalyzedEpisode, ScriptAnalysis, formatDurationSeconds } from '../services/scriptAnalysisService';
 import { useCanvasNavigation } from '../hooks/useCanvasNavigation';
 import { useNodeManagement } from '../hooks/useNodeManagement';
@@ -62,10 +63,20 @@ import { getGenerationStatus, getVideoTaskStatus } from '../services/generationS
 import { extractVideoLastFrame } from '../utils/videoHelpers';
 import { addCanvasJob, removeCanvasJob, getEpisodeCanvasJobs, loadCanvasJobs, updateCanvasJob } from '../services/canvasJobStore';
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '../constants/modelDefaults';
+import {
+    getCanvasAssetGroups,
+    getCanvasShotSceneGroups,
+    getCanvasShotVideoBounds,
+    organizeCanvasAssetNodes,
+} from '../utils/canvasAssetGroups';
 
 // ============================================================================
 // 常量
 // ============================================================================
+
+/** 读取登录 token：项目画布接口需要鉴权（按项目归属做数据隔离） */
+const authToken = () =>
+    typeof localStorage !== 'undefined' ? localStorage.getItem('twitcanva_auth_token') || '' : '';
 
 const STATUS_STYLE: Record<string, string> = {
     制作中: 'bg-[#e8f1ff] text-[#1677ff]',
@@ -78,6 +89,24 @@ const ASSET_META = {
     characters: { label: '人物', icon: Users, color: 'text-violet-300 bg-violet-500/15' },
     scenes: { label: '场景', icon: MapPin, color: 'text-emerald-300 bg-emerald-500/15' },
     props: { label: '道具', icon: Package, color: 'text-amber-300 bg-amber-500/15' },
+} as const;
+
+const CANVAS_ASSET_GROUP_TONE = {
+    characters: {
+        light: 'border-violet-200 bg-violet-50/[0.45] text-[#5b46c9]',
+        dark: 'border-violet-300/20 bg-violet-500/[0.055] text-violet-200',
+        icon: 'bg-violet-500/[0.12] text-violet-500',
+    },
+    scenes: {
+        light: 'border-emerald-200 bg-emerald-50/40 text-[#168467]',
+        dark: 'border-emerald-300/20 bg-emerald-500/[0.055] text-emerald-200',
+        icon: 'bg-emerald-500/[0.12] text-emerald-500',
+    },
+    props: {
+        light: 'border-amber-200 bg-amber-50/40 text-[#b06a08]',
+        dark: 'border-amber-300/20 bg-amber-500/[0.055] text-amber-200',
+        icon: 'bg-amber-500/[0.12] text-amber-500',
+    },
 } as const;
 
 type AssetKey = keyof typeof ASSET_META;
@@ -132,6 +161,8 @@ interface ContextMenuState {
     x: number;
     y: number;
     nodeId?: string;
+    /** 由左侧工具栏「添加节点」按钮打开：新节点落在视口中心，而不是工具栏旁边 */
+    centered?: boolean;
 }
 
 // ============================================================================
@@ -170,6 +201,31 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
     const [headerCollapsed, setHeaderCollapsed] = useState(false);
     const [assetLibraryOpen, setAssetLibraryOpen] = useState(false);
     const [templateLibraryOpen, setTemplateLibraryOpen] = useState(false);
+    /**
+     * 头部「人物 / 场景 / 道具」三个按钮的抽屉弹窗。
+     * 三个抽屉可以同时打开：人物在左上、场景在左下、道具在右侧。
+     */
+    const [openAssetDrawers, setOpenAssetDrawers] = useState<Record<AssetKey, boolean>>({
+        characters: false,
+        scenes: false,
+        props: false,
+    });
+    const toggleAssetDrawer = (key: AssetKey) => {
+        setOpenAssetDrawers((previous) => ({ ...previous, [key]: !previous[key] }));
+    };
+    const closeAssetDrawer = (key: AssetKey) => {
+        setOpenAssetDrawers((previous) => ({ ...previous, [key]: false }));
+    };
+    /** 多个资产抽屉共用一次 Esc 关闭，避免同时打开时逐个监听被打断。 */
+    useEffect(() => {
+        if (!Object.values(openAssetDrawers).some(Boolean)) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            setOpenAssetDrawers({ characters: false, scenes: false, props: false });
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        return () => window.removeEventListener('keydown', onKeyDown, true);
+    }, [openAssetDrawers]);
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [isDraggingNodeToChat, setIsDraggingNodeToChat] = useState(false);
     /** 分镜导入结果提示（3 秒后自动消失） */
@@ -239,7 +295,12 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                 const failedJob = loadCanvasJobs(projectId).find((j) => j.nodeId === nodeId);
                 // Seedance 任务由服务端裁定最终状态：保留台账，下次进入画布按 taskId 确认
                 // （厂商失败会立即返回 failed；若只是前端超时，服务端可能稍后完成并落盘）
-                if (!failedJob?.taskId) removeCanvasJob(projectId, nodeId);
+                if (!failedJob?.taskId) {
+                    // 没有服务端 taskId 说明这一步就结束了：把失败原因写进任务台账，
+                    // 否则「生成任务」页只会看到任务消失，无从排查
+                    const errorMessage = nodesRef.current.find((n) => n.id === nodeId)?.errorMessage;
+                    removeCanvasJob(projectId, nodeId, 'failed', errorMessage || '视频生成失败');
+                }
                 return;
             }
 
@@ -249,17 +310,17 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             if (!job || currentEp == null || Number(job.episode) !== Number(currentEp)) {
                 return;
             }
-            // 节点已被删除：没必要再恢复
+            // 节点已被删除：没必要再恢复，也不该记成一次成功任务
             if (!nodesRef.current.some((n) => n.id === nodeId)) {
-                removeCanvasJob(projectId, nodeId);
+                removeCanvasJob(projectId, nodeId, 'discard');
                 return;
             }
 
-            // 成功：等节点状态写入后再落盘并清台账；若此时已卸载则保留台账留给恢复
+            // 成功：等节点状态写入后再落盘并收尾台账（写成功终态，保留一条历史）；若此时已卸载则保留台账留给恢复
             setTimeout(async () => {
                 if (!mountedRef.current) return;
                 await persistEpisodeRef.current?.(Number(job.episode), nodesRef.current, viewportRef.current);
-                removeCanvasJob(projectId, nodeId);
+                removeCanvasJob(projectId, nodeId, 'succeeded');
             }, 400);
         },
         onVideoTaskSubmitted: (nodeId, taskId) => {
@@ -346,7 +407,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
         try {
             const res = await fetch(`/api/project-workflows/${encodeURIComponent(projectId)}/${encodeURIComponent(episode)}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + authToken() },
                 body: JSON.stringify({ nodes: epNodes, viewport: epViewport }),
             });
             return res.ok;
@@ -363,18 +424,30 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
         const key = String(episode);
         const cached = episodeCanvasCacheRef.current[key];
         if (cached) {
+            const organized = organizeCanvasAssets(cached.nodes);
+            const nextViewport = organized.changed ? focusOnNodes(organized.nodes) : cached.viewport;
             skipMarkRef.current = true;
-            setNodes(cached.nodes);
-            setViewport(cached.viewport);
+            setNodes(organized.nodes);
+            setViewport(nextViewport);
+            episodeCanvasCacheRef.current[key] = { nodes: organized.nodes, viewport: nextViewport };
             setCanvasReadyKey(key);
             return;
         }
         setCanvasReadyKey(null);
-        fetch(`/api/project-workflows/${encodeURIComponent(projectId)}/${encodeURIComponent(episode)}`)
+        fetch(`/api/project-workflows/${encodeURIComponent(projectId)}/${encodeURIComponent(episode)}`, {
+            headers: { Authorization: 'Bearer ' + authToken() },
+        })
             .then((r) => (r.ok ? r.json() : null))
             .then((data) => {
-                const nextNodes: NodeData[] = data && Array.isArray(data.nodes) ? data.nodes : [];
-                const nextViewport: Viewport = (data && data.viewport) || { x: 0, y: 0, zoom: 1 };
+                const storedNodes: NodeData[] = data && Array.isArray(data.nodes) ? data.nodes : [];
+                const storedViewport: Viewport = (data && data.viewport) || { x: 0, y: 0, zoom: 1 };
+                const organized = organizeCanvasAssets(storedNodes);
+                /**
+                 * 旧画布没有资产分类，首次整理会去重并移动节点。
+                 * 只在这次迁移时重新聚焦，之后保留用户的缩放与平移。
+                 */
+                const nextViewport = organized.changed ? focusOnNodes(organized.nodes) : storedViewport;
+                const nextNodes = organized.nodes;
                 episodeCanvasCacheRef.current[key] = { nodes: nextNodes, viewport: nextViewport };
                 skipMarkRef.current = true; // 恢复期间不标记为未保存
                 setNodes(nextNodes);
@@ -391,20 +464,32 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
     const [contextMenu, setContextMenu] = useState<ContextMenuState>({ isOpen: false, x: 0, y: 0 });
 
     // ---------- 加载项目 ----------
+    // 制作状态是否已从服务端水合（决定下面 assetStore 是否需要重新读取）
+    const [stateReady, setStateReady] = useState(false);
+
     useEffect(() => {
         let cancelled = false;
         setLoading(true);
         setLoadError('');
-        fetchProject(projectId)
-            .then((p) => {
+        setStateReady(false);
+        (async () => {
+            try {
+                const p = await fetchProject(projectId);
                 if (!cancelled) setProject(p);
-            })
-            .catch((e: any) => {
+            } catch (e: any) {
                 if (!cancelled) setLoadError(e.message || '加载项目失败');
-            })
-            .finally(() => {
+            } finally {
                 if (!cancelled) setLoading(false);
-            });
+            }
+
+            // 从数据库拉制作过程状态并回填 localStorage（首次会自动上迁历史数据）
+            try {
+                await hydrateProjectState(projectId);
+            } catch (error) {
+                console.warn('[canvas] 制作状态水合失败，使用本地缓存:', error);
+            }
+            if (!cancelled) setStateReady(true);
+        })();
         return () => {
             cancelled = true;
         };
@@ -426,7 +511,8 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
 
     // ---------- 资产确认数据（继承工作流，按集隔离） ----------
     // 画布侧直接读取工作流「资产确认」的结果；每集独立取用，互不污染。
-    const assetStore = useMemo(() => loadAssetStore(projectId), [projectId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const assetStore = useMemo(() => loadAssetStore(projectId), [projectId, stateReady]);
     const currentEpisodeNo = episodes[activeEpisode]?.episode;
 
     /** 当前集资产：优先「资产确认」结果（含生成图/造型），缺失时回退剧本解析的原始资产 */
@@ -465,6 +551,13 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
         };
     }, [currentEpisodeAssets]);
 
+    /** 画布层资产归类 / 去重入口：统一使用当前集已确认的资产数据做识别。 */
+    const organizeCanvasAssets = (list: NodeData[]) => organizeCanvasAssetNodes(list, currentEpisodeAssets);
+
+    const canvasAssetGroups = useMemo(() => getCanvasAssetGroups(nodes), [nodes]);
+    const canvasShotVideoBounds = useMemo(() => getCanvasShotVideoBounds(nodes), [nodes]);
+    const canvasShotSceneGroups = useMemo(() => getCanvasShotSceneGroups(nodes), [nodes]);
+
     const filteredEpisodes = useMemo(() => {
         const kw = episodeSearch.trim().toLowerCase();
         if (!kw) return episodes;
@@ -478,9 +571,10 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
      */
     const panelTabs = useMemo<[PanelTab, string][]>(() => {
         const all: [PanelTab, string][] = [
-            ['episodes', `分集 (${episodes.length})`],
+            //隐藏左侧面板tab 分集和全剧资产 显示
+            // ['episodes', `分集 (${episodes.length})`],
             ['shots', '分镜'],
-            ['assets', '全剧资产'],
+            // ['assets', '全剧资产'],
             ['characters', '人物'],
             ['scenes', '场景'],
             ['props', '道具'],
@@ -534,16 +628,19 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
         setSelectedNodeIds([node.id]);
     };
 
-    /** 在画布中心添加一个节点 */
-    const addNodeAtCenter = (type: NodeType) => {
-        const centerX = (window.innerWidth / 2 - viewport.x) / viewport.zoom - 170;
-        const centerY = (window.innerHeight / 2 - viewport.y) / viewport.zoom - 100;
+    /** 在屏幕坐标处添加节点；不传坐标时落在视口中心 */
+    const addNodeAt = (type: NodeType, point?: { x: number; y: number }) => {
+        const screenX = point ? point.x : window.innerWidth / 2;
+        const screenY = point ? point.y : window.innerHeight / 2;
+        // 减去节点半宽/半高，让节点大致以鼠标位置为中心
+        const nodeX = (screenX - viewport.x) / viewport.zoom - 170;
+        const nodeY = (screenY - viewport.y) / viewport.zoom - 100;
         const isVideo = type === NodeType.VIDEO;
         const node: NodeData = {
             id: crypto.randomUUID(),
             type,
-            x: centerX,
-            y: centerY,
+            x: nodeX,
+            y: nodeY,
             prompt: '',
             status: NodeStatus.IDLE,
             model: isVideo ? DEFAULT_VIDEO_MODEL : DEFAULT_IMAGE_MODEL,
@@ -718,10 +815,11 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
         const minX = Math.min(...list.map((n) => n.x));
         const maxX = Math.max(...list.map((n) => n.x + 360));
         const minY = Math.min(...list.map((n) => n.y));
-        const maxY = Math.max(...list.map((n) => n.y + 430));
-        const w = Math.max(480, maxX - minX + 260);
-        const h = Math.max(480, maxY - minY + 260);
-        const zoom = Math.min(1, Math.max(0.3, Math.min(window.innerWidth / w, window.innerHeight / h)));
+        const maxY = Math.max(...list.map((n) => n.y + 520));
+        const w = Math.max(480, maxX - minX + 300);
+        const h = Math.max(480, maxY - minY + 300);
+        /** 归类后的画布可能同时包含三类资产和整集视频，允许缩到 18% 以便完整查看。 */
+        const zoom = Math.min(1, Math.max(0.18, Math.min(window.innerWidth / w, window.innerHeight / h)));
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
         const next: Viewport = {
@@ -739,12 +837,14 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
         origin: { x: number; y: number }
     ) => {
         const placed = placeNewChain(built.nodes, origin);
-        setNodes((prev) => [...prev, ...placed]);
+        const organized = organizeCanvasAssets([...nodesRef.current, ...placed]);
+        setNodes(organized.nodes);
         const selectIds = built.videoNodeIds && built.videoNodeIds.length > 0
             ? built.videoNodeIds
             : placed.filter((n) => n.type === NodeType.VIDEO).map((n) => n.id);
         setSelectedNodeIds(selectIds);
-        focusOnNodes(placed);
+        const selectedNodes = organized.nodes.filter((node) => selectIds.includes(node.id));
+        focusOnNodes(selectedNodes.length > 0 ? selectedNodes : organized.nodes);
         return placed;
     };
 
@@ -805,8 +905,8 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             aspectRatio: project?.aspectRatio || '9:16',
             existingNodes: nodesRef.current,
             refAssets: shotRefAssets,
-            // 整集铺开时每行也自带参考图，避免连线跨行、看不清谁是谁
-            reuseExistingRefs: false,
+            // 归类后参考图集中在左侧，相同资产直接复用，画布上只保留一份
+            reuseExistingRefs: true,
         });
         if (built.nodes.length === 0) {
             setShotsImportTip('这些分镜已经在画布上了');
@@ -833,7 +933,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             aspectRatio: project?.aspectRatio || '9:16',
             existingNodes: nodesRef.current,
             refAssets: shotRefAssets,
-            reuseExistingRefs: false,
+            reuseExistingRefs: true,
         });
         appendShotChain(built, origin);
         if (!built.hasExistingVideo) {
@@ -855,7 +955,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             aspectRatio: project?.aspectRatio || '9:16',
             existingNodes: nodesRef.current,
             refAssets: shotRefAssets,
-            reuseExistingRefs: false,
+            reuseExistingRefs: true,
         });
         if (built.nodes.length === 0) {
             setShotsImportTip('这些分镜已经在画布上了');
@@ -900,23 +1000,25 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             aspectRatio: project?.aspectRatio || '9:16',
             existingNodes: [],
             refAssets: shotRefAssets,
-            reuseExistingRefs: false,
+            reuseExistingRefs: true,
         });
         if (built.nodes.length === 0) return;
 
         // 构建成功后再记标记，避免异常情况下永久跳过自动识别
         localStorage.setItem(markerKey, String(Date.now()));
+        persistUiState(projectId, `shot-canvas-auto:ep${ep.episode}`, Date.now());
 
-        setNodes((prev) => [...prev, ...built.nodes]);
+        const organized = organizeCanvasAssets([...nodesRef.current, ...built.nodes]);
+        setNodes(organized.nodes);
         setSelectedNodeIds(built.videoNodeIds);
-        const nextViewport = focusOnNodes(built.nodes);
+        const nextViewport = focusOnNodes(organized.nodes);
         // 自动识别后直接切到「分镜」Tab，让用户看到识别结果
         setPanelTab('shots');
         setScriptPanelOpen(true);
         setShotsImportTip(`已自动识别第 ${ep.episode} 集的 ${built.videoNodeIds.length} 个分镜并铺到画布`);
         // 自动导入后立即落盘，避免用户没点保存就离开导致节点丢失
-        episodeCanvasCacheRef.current[String(ep.episode)] = { nodes: built.nodes, viewport: nextViewport };
-        persistEpisode(ep.episode, built.nodes, nextViewport);
+        episodeCanvasCacheRef.current[String(ep.episode)] = { nodes: organized.nodes, viewport: nextViewport };
+        persistEpisode(ep.episode, organized.nodes, nextViewport);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [canvasReadyKey, activeEpisode, projectId]);
 
@@ -962,26 +1064,33 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                     writeBackShotVideo(projectId, n.shotEpisode, n.shotNumber, rawUrl);
                 }
                 await persistEpisodeRef.current?.(ep.episode, nodesRef.current, viewportRef.current);
-                removeCanvasJob(projectId, job.nodeId);
+                removeCanvasJob(projectId, job.nodeId, 'succeeded');
             }, 400);
         };
 
         const resume = async (job: { nodeId: string; startedAt: number; taskId?: string }) => {
             // 节点已不在本集画布（被删除 / 从未落盘）：清掉台账，不再轮询
             if (!nodesRef.current.some((n) => n.id === job.nodeId)) {
-                removeCanvasJob(projectId, job.nodeId);
+                removeCanvasJob(projectId, job.nodeId, 'discard');
                 return;
             }
 
             updateNode(job.nodeId, { status: NodeStatus.LOADING, errorMessage: undefined });
             // 服务端最长等待约 11 分钟，这里多留 4 分钟余量
             const deadline = job.startedAt + 15 * 60 * 1000;
+            // 连续失败容忍次数：后端重启时任务会被 restore 继续跑，短暂不可达属正常；
+            // 持续不可达说明连接已断，必须报错，不能让节点一直转圈到 deadline。
+            const MAX_CONSECUTIVE_FAILURES = 3;
+            let consecutiveFailures = 0;
 
             while (!cancelled && Date.now() < deadline) {
+                let reachable = false;
+
                 // 1) 优先查服务端任务状态：成功/失败都能立刻知道
                 if (job.taskId) {
                     try {
                         const taskStatus = await getVideoTaskStatus(job.taskId);
+                        reachable = true;
                         if (cancelled) return;
                         if (taskStatus.status === 'succeeded' && taskStatus.resultUrl) {
                             await applySuccess(job, taskStatus.resultUrl);
@@ -992,7 +1101,12 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                                 status: NodeStatus.ERROR,
                                 errorMessage: taskStatus.error || '视频生成失败，请重新生成',
                             });
-                            removeCanvasJob(projectId, job.nodeId);
+                            removeCanvasJob(
+                                projectId,
+                                job.nodeId,
+                                'failed',
+                                taskStatus.error || '视频生成失败，请重新生成',
+                            );
                             return;
                         }
                     } catch {
@@ -1003,14 +1117,45 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                 // 2) 回退：按 nodeId 查服务端已落盘的产物
                 try {
                     const status = await getGenerationStatus(job.nodeId);
+                    reachable = true;
                     if (cancelled) return;
                     if (status.status === 'success' && status.resultUrl) {
                         await applySuccess(job, status.resultUrl);
                         return;
                     }
+                    if (status.status === 'failed') {
+                        updateNode(job.nodeId, {
+                            status: NodeStatus.ERROR,
+                            errorMessage: status.error || '视频生成失败，请重新生成',
+                        });
+                        removeCanvasJob(
+                            projectId,
+                            job.nodeId,
+                            'failed',
+                            status.error || '视频生成失败，请重新生成',
+                        );
+                        return;
+                    }
                 } catch {
                     /* 网络波动，继续轮询 */
                 }
+
+                if (reachable) {
+                    consecutiveFailures = 0;
+                } else if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                    updateNode(job.nodeId, {
+                        status: NodeStatus.ERROR,
+                        errorMessage: '与生成服务的连接已中断（后端可能已重启），请确认服务恢复后重新生成',
+                    });
+                    removeCanvasJob(
+                        projectId,
+                        job.nodeId,
+                        'failed',
+                        '与生成服务的连接已中断（后端可能已重启）',
+                    );
+                    return;
+                }
+
                 await sleep(5000);
             }
 
@@ -1019,7 +1164,12 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                     status: NodeStatus.ERROR,
                     errorMessage: '生成未完成（离开页面期间中断），请重新生成',
                 });
-                removeCanvasJob(projectId, job.nodeId);
+                removeCanvasJob(
+                    projectId,
+                    job.nodeId,
+                    'failed',
+                    '生成未完成（离开页面期间中断）',
+                );
             }
         };
 
@@ -1027,6 +1177,32 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
         jobs.forEach((job) => { void resume(job); });
 
         return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [canvasReadyKey, activeEpisode, projectId]);
+
+    /**
+     * 兜底：清掉「假生成中」节点。
+     *
+     * 节点 status=loading 会被落盘，但任务台账只保留 30 分钟：
+     * 超过期限 / 换浏览器 / 清缓存后，节点仍是 loading 却没有任何轮询接管，会永久转圈。
+     * 这里在画布就绪后延迟一轮，把「loading 但台账里没有任务」的节点标记为失败。
+     */
+    useEffect(() => {
+        if (!canvasReadyKey) return;
+        const timer = setTimeout(() => {
+            const tracked = new Set(loadCanvasJobs(projectId).map((job) => job.nodeId));
+            const staleNodes = nodesRef.current.filter(
+                (node) => node.status === NodeStatus.LOADING && !tracked.has(node.id)
+            );
+            if (staleNodes.length === 0) return;
+            staleNodes.forEach((node) => {
+                updateNode(node.id, {
+                    status: NodeStatus.ERROR,
+                    errorMessage: '生成任务已丢失（超时或服务重启），请重新生成',
+                });
+            });
+        }, 3000);
+        return () => clearTimeout(timer);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [canvasReadyKey, activeEpisode, projectId]);
 
@@ -1166,7 +1342,24 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
 
     const handleNodeContextMenu = (e: React.MouseEvent, nodeId: string) => {
         e.preventDefault();
+        // 阻止冒泡到画布：否则画布的全局右键会把「删除节点」菜单覆盖成「新建节点」菜单
+        e.stopPropagation();
         setContextMenu({ isOpen: true, x: e.clientX, y: e.clientY, nodeId });
+    };
+
+    /**
+     * 屏幕坐标 → 命中节点。
+     * 右键菜单打开时全屏遮罩压在画布之上，拿不到真实事件目标，这里按画布坐标反查；
+     * 尺寸取节点卡片的近似外框（宽 380 / 高 520），只用于判断右键是否落在节点上。
+     */
+    const findNodeAtScreenPoint = (clientX: number, clientY: number) => {
+        const worldX = (clientX - viewport.x) / viewport.zoom;
+        const worldY = (clientY - viewport.y) / viewport.zoom;
+        for (let i = nodes.length - 1; i >= 0; i -= 1) {
+            const n = nodes[i];
+            if (worldX >= n.x && worldX <= n.x + 380 && worldY >= n.y && worldY <= n.y + 520) return n;
+        }
+        return undefined;
     };
 
     // ---------- 键盘删除 ----------
@@ -1215,6 +1408,12 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             className={`w-screen h-screen overflow-hidden select-none font-sans ${
                 isLight ? 'canvas-light-scope bg-[#f7f8fc] text-[#202637]' : 'bg-[#0b0b12] text-white'
             }`}
+            onContextMenu={(e) => {
+                // 画布页统一屏蔽浏览器原生右键菜单（输入框内保留，便于复制/粘贴）
+                const target = e.target as HTMLElement | null;
+                if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+                e.preventDefault();
+            }}
         >
             {/*
               浅色主题覆盖层：旧画布里大量深色语义的 Tailwind 工具类（白字/浅灰字/半透明白底）
@@ -1274,7 +1473,8 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             {headerCollapsed ? (
                 <button
                     onClick={() => setHeaderCollapsed(false)}
-                    className={`fixed top-4 left-14 z-50 w-8 h-8 rounded-lg flex items-center justify-center border backdrop-blur-xl transition-colors ${
+                    style={{ left: openAssetDrawers.characters ? 'calc(25% + 16px)' : 56 }}
+                    className={`fixed top-4 left-14 z-50 w-8 h-8 rounded-lg flex items-center justify-center border backdrop-blur-xl transition-all duration-300 ${
                         isLight
                             ? 'border-[#e6e9f2] bg-white/90 text-[#6b7488] hover:text-[#202637]'
                             : 'border-white/10 bg-[#161521]/85 text-neutral-300 hover:text-white'
@@ -1285,15 +1485,17 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                 </button>
             ) : (
                 <header
-                    className="fixed top-4 left-14 z-50 flex items-center gap-2.5 h-11 pl-1.5 pr-2 rounded-xl border shadow-lg backdrop-blur-xl"
+                    className="fixed top-4 left-14 z-50 flex items-center gap-2.5 h-11 pl-1.5 pr-2 rounded-xl border shadow-lg backdrop-blur-xl transition-all duration-300"
                     style={
                         isLight
                             ? {
+                                left: openAssetDrawers.characters ? 'calc(25% + 16px)' : 56,
                                 background: 'rgba(255, 255, 255, .92)',
                                 borderColor: '#e6e9f2',
                                 boxShadow: '0 10px 28px rgba(25, 34, 58, .08)',
                             }
                             : {
+                                left: openAssetDrawers.characters ? 'calc(25% + 16px)' : 56,
                                 background: 'rgba(18, 17, 29, .85)',
                                 borderColor: 'rgba(196, 181, 253, .13)',
                                 boxShadow: '0 10px 28px rgba(0, 0, 0, .28)',
@@ -1374,7 +1576,7 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                         <X size={16} />
                     </button>
                     <button
-                        onClick={() => setContextMenu({ isOpen: true, x: 76, y: window.innerHeight / 2 - 20 })}
+                        onClick={() => setContextMenu({ isOpen: true, x: 76, y: window.innerHeight / 2 - 20, centered: true })}
                         className="w-10 h-10 rounded-xl flex items-center justify-center hover:scale-105 transition-all duration-200 shadow-lg bg-gradient-to-br from-violet-400 to-violet-600 text-white shadow-violet-500/25"
                         title="添加节点"
                     >
@@ -1751,6 +1953,125 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                         }}
                     />
 
+                    {/* 画布资产归类区域：人物在上、场景在中、道具在下，分镜视频保留在右侧工作区 */}
+                    {(canvasAssetGroups.length > 0 || canvasShotVideoBounds) && (
+                        <div className="pointer-events-none absolute inset-0 z-[1]">
+                            {canvasAssetGroups.map((group) => {
+                                const meta = ASSET_META[group.category];
+                                const tone = CANVAS_ASSET_GROUP_TONE[group.category];
+                                const Icon = meta.icon;
+                                return (
+                                    <section
+                                        key={group.category}
+                                        aria-label={`${meta.label}画布分组`}
+                                        className={`absolute rounded-[26px] border border-dashed ${isLight ? tone.light : tone.dark}`}
+                                        style={{
+                                            left: group.x,
+                                            top: group.y,
+                                            width: group.width,
+                                            height: group.height,
+                                        }}
+                                    >
+                                        <div
+                                            className="absolute left-5 top-[5px] flex items-center gap-3"
+                                            style={{
+                                                transform: `scale(${Math.min(3, 1 / Math.max(viewport.zoom, 0.01))})`,
+                                                transformOrigin: 'top left',
+                                            }}
+                                        >
+                                            <span className={`flex h-10 w-10 items-center justify-center rounded-[13px] ${tone.icon}`}>
+                                                <Icon size={18} />
+                                            </span>
+                                            <span className="text-[20px] font-semibold tracking-tight">{meta.label}</span>
+                                            <span
+                                                className={`rounded-full border px-2.5 py-1 text-[12px] tabular-nums ${
+                                                    isLight
+                                                        ? 'border-black/[0.05] bg-white/75'
+                                                        : 'border-white/10 bg-black/15'
+                                                }`}
+                                            >
+                                                {group.count}
+                                            </span>
+                                        </div>
+                                    </section>
+                                );
+                            })}
+
+                            {canvasShotVideoBounds && (
+                                <section
+                                    aria-label="分镜视频画布区域"
+                                    className={`absolute rounded-[24px] border border-dashed ${
+                                        isLight
+                                            ? 'border-slate-200 bg-slate-50/30 text-[#7c8597]'
+                                            : 'border-white/10 bg-white/[0.018] text-neutral-500'
+                                    }`}
+                                    style={{
+                                        left: canvasShotVideoBounds.x,
+                                        top: canvasShotVideoBounds.y,
+                                        width: canvasShotVideoBounds.width,
+                                        height: canvasShotVideoBounds.height,
+                                    }}
+                                >
+                                    <div
+                                        className="absolute left-5 top-5 flex items-center gap-2.5"
+                                        style={{
+                                            transform: `scale(${Math.min(3, 1 / Math.max(viewport.zoom, 0.01))})`,
+                                            transformOrigin: 'top left',
+                                        }}
+                                    >
+                                        <Film size={18} />
+                                        <span className="text-[20px] font-medium">分镜视频</span>
+                                        <span className="text-[12px] tabular-nums">{canvasShotVideoBounds.count}</span>
+                                    </div>
+                                </section>
+                            )}
+
+                            {/* 每个场景一行：左侧场景标签，右侧横排该场景的分镜片段 */}
+                            {canvasShotSceneGroups.map((scene) => (
+                                <section
+                                    key={scene.key}
+                                    aria-label={`${scene.label}分镜分组`}
+                                    className={`absolute rounded-[18px] border ${
+                                        isLight
+                                            ? 'border-slate-200/80 text-[#7c8597]'
+                                            : 'border-white/[0.08] text-neutral-500'
+                                    }`}
+                                    style={{
+                                        left: scene.x,
+                                        top: scene.y,
+                                        width: scene.width,
+                                        height: scene.height,
+                                    }}
+                                >
+                                    <div className="absolute inset-y-0 left-0 flex w-[224px] items-center px-6">
+                                        <div
+                                            className="flex items-baseline gap-2 whitespace-nowrap"
+                                            style={{
+                                                transform: `scale(${Math.min(3, 1 / Math.max(viewport.zoom, 0.01))})`,
+                                                transformOrigin: 'left center',
+                                            }}
+                                        >
+                                            <span
+                                                className={`text-[14px] font-medium ${
+                                                    isLight ? 'text-[#5c6577]' : 'text-neutral-400'
+                                                }`}
+                                            >
+                                                {scene.label}
+                                            </span>
+                                            <span
+                                                className={`text-[12px] tabular-nums ${
+                                                    isLight ? 'text-[#9aa3b2]' : 'text-neutral-600'
+                                                }`}
+                                            >
+                                                {scene.count}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </section>
+                            ))}
+                        </div>
+                    )}
+
                     {/* 连接线 */}
                     <svg className="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none z-0">
                         <ConnectionsLayer
@@ -1880,13 +2201,25 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
             {/* ============ 右键菜单 ============ */}
             {contextMenu.isOpen && (
                 <>
+                    {/* 全屏遮罩：左键关闭；右键拦截浏览器原生菜单，并把自定义菜单移到新位置 */}
                     <div
                         className="fixed inset-0 z-[99]"
                         onClick={() => setContextMenu({ isOpen: false, x: 0, y: 0 })}
+                        onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            // 遮罩盖在画布之上：这里按画布坐标反查鼠标下方的节点，保证「右键节点 → 删除节点」还能用
+                            const nodeId = findNodeAtScreenPoint(e.clientX, e.clientY)?.id;
+                            setContextMenu({ isOpen: true, x: e.clientX, y: e.clientY, nodeId });
+                        }}
                     />
                     <div
                         className="fixed z-[100]"
                         style={{ left: contextMenu.x, top: contextMenu.y }}
+                        onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                        }}
                     >
                         <div
                             className={`min-w-[150px] rounded-xl border shadow-2xl py-1 overflow-hidden ${
@@ -1914,7 +2247,10 @@ export const ProjectCanvasPage: React.FC<ProjectCanvasPageProps> = ({ projectId,
                                         <button
                                             key={key}
                                             onClick={() => {
-                                                addNodeAtCenter(type);
+                                                addNodeAt(
+                                                    type,
+                                                    contextMenu.centered ? undefined : { x: contextMenu.x, y: contextMenu.y },
+                                                );
                                                 setContextMenu({ isOpen: false, x: 0, y: 0 });
                                             }}
                                             className="w-full flex items-center gap-2 px-3 py-2 text-[13px] text-neutral-200 hover:bg-white/5 transition-colors"
